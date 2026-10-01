@@ -1,0 +1,39 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128;
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Health check collection
+    match /test/{testId} {
+      allow read, write: if true;
+    }
+
+    // Applications collection: Students can submit applications and admins can read/update/delete them
+    match /applications/{applicationId} {
+      allow read, write: if true;
+    }
+
+    // Stored files collection: Original binary PDF documents uploaded by applicants
+    match /stored_files/{fileId} {
+      allow read, write: if true;
+
+      match /chunks/{chunkId} {
+        allow read, write: if true;
+      }
+    }
+
+    // Settings collection
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isValidId(settingId);
+    }
+  }
+}

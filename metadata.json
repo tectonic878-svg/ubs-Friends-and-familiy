@@ -1,0 +1,8 @@
+{
+  "name": "UBS - Friends & Family Chegirma Tizimi",
+  "description": "Universitet talabalari uchun Friends va Family dasturlari bo'yicha 10% chegirmalarni hisoblash, arizalarni qabul qilish va boshqarish platformasi hamda Telegram bot.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

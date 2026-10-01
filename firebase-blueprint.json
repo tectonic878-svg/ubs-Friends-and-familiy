@@ -1,0 +1,56 @@
+{
+  "entities": {
+    "Application": {
+      "title": "Application",
+      "description": "Talabalar arizasi (Friends yoki Family dasturi)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string", "enum": ["friends", "family"] },
+        "status": { "type": "string", "enum": ["kutilmoqda", "tasdiqlandi", "rad_etildi"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "type", "status", "createdAt"]
+    },
+    "ContractSettings": {
+      "title": "ContractSettings",
+      "description": "Universitet shartnoma narxlari sozlamalari",
+      "type": "object",
+      "properties": {
+        "friendsContractAmountUZS": { "type": "number" },
+        "familyContractAmountPerStudentUZS": { "type": "number" },
+        "academicYear": { "type": "string" },
+        "notes": { "type": "string" },
+        "lastUpdatedAt": { "type": "string" }
+      },
+      "required": ["friendsContractAmountUZS", "familyContractAmountPerStudentUZS", "academicYear"]
+    },
+    "AdminCredentials": {
+      "title": "AdminCredentials",
+      "description": "Admin tizimiga kirish ma'lumotlari (login va parol)",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string" },
+        "password": { "type": "string" },
+        "lastChangedAt": { "type": "string" },
+        "changedBy": { "type": "string" }
+      },
+      "required": ["username", "password"]
+    }
+  },
+  "firestore": {
+    "/applications/{applicationId}": {
+      "schema": { "$ref": "#/entities/Application" },
+      "description": "Talabalar Friends va Family arizalari to'plami"
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/ContractSettings" },
+      "description": "Universitet shartnoma sozlamalari yoki admin kirish sozlamalari"
+    },
+    "/test/{testId}": {
+      "schema": { "$ref": "#/entities/Application" },
+      "description": "Tizim aloqasini tekshirish uchun test to'plami"
+    }
+  }
+}
