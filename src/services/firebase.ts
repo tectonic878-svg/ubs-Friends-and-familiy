@@ -24,35 +24,7 @@ export const DEFAULT_ADMIN_CREDENTIALS: AdminCredentials = {
 // Initialize Firebase App
 export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-
-export const FIRESTORE_UPGRADE_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/firestore/databases/${firebaseConfig.firestoreDatabaseId}/data?openUpgradeDialog=true`;
-
-type QuotaListener = (exceeded: boolean) => void;
-const quotaListeners: Set<QuotaListener> = new Set();
-let isQuotaCurrentlyExceeded = false;
-
-export function onQuotaStateChange(listener: QuotaListener) {
-  quotaListeners.add(listener);
-  listener(isQuotaCurrentlyExceeded);
-  return () => {
-    quotaListeners.delete(listener);
-  };
-}
-
-export function notifyQuotaExceeded() {
-  if (!isQuotaCurrentlyExceeded) {
-    isQuotaCurrentlyExceeded = true;
-    quotaListeners.forEach((l) => l(true));
-  }
-}
-
-export function notifyQuotaRecovered() {
-  if (isQuotaCurrentlyExceeded) {
-    isQuotaCurrentlyExceeded = false;
-    quotaListeners.forEach((l) => l(false));
-  }
-}
+export const db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
 
 // Error Handling conforming to Firebase Skill Guidelines
 export enum OperationType {
@@ -83,22 +55,14 @@ export interface FirestoreErrorInfo {
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
   const errMsg = error instanceof Error ? error.message : String(error);
-  const isQuota = errMsg.includes('Quota limit exceeded') || 
-                  errMsg.includes('quota') || 
-                  errMsg.includes('resource-exhausted');
-  
-  const isUnavailable = errMsg.includes('unavailable') || 
-                        errMsg.includes('Could not reach Cloud Firestore backend') ||
-                        errMsg.includes('the client is offline');
+  const isQuotaOrOffline = errMsg.includes('Quota limit exceeded') || 
+                           errMsg.includes('quota') || 
+                           errMsg.includes('the client is offline') ||
+                           errMsg.includes('resource-exhausted');
 
-  if (isQuota) {
-    notifyQuotaExceeded();
-  }
-
-  // If it's a quota, offline, or unavailable issue, gracefully warn without throwing unhandled exceptions
-  // This prevents app crashes when Firebase is temporarily down or unreachable while Supabase is active.
-  if (isQuota || isUnavailable) {
-    console.warn(`Firestore [${operationType}] on [${path}] background task paused:`, errMsg);
+  // If it's a quota or offline issue, gracefully warn without throwing unhandled exceptions
+  if (isQuotaOrOffline) {
+    console.warn(`Firestore [${operationType}] on [${path}] paused due to quota or offline status:`, errMsg);
     return;
   }
 
@@ -129,20 +93,15 @@ export async function testConnection(): Promise<boolean> {
     return true;
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
-    const isSilentError = errMsg.includes('the client is offline') || 
-                          errMsg.includes('Quota limit exceeded') || 
-                          errMsg.includes('unavailable');
-    
-    if (isSilentError) {
-      console.warn('Firebase Firestore ulanishi vaqtincha mavjud emas (Supabase asosiy baza sifatida ishlamoqda):', errMsg);
+    if (errMsg.includes('the client is offline') || errMsg.includes('Quota limit exceeded')) {
+      console.warn('Firebase mijoz oflayn yoki kvota holatda:', errMsg);
       return false;
     }
     // If rules allow or document not found, the server is reached successfully
     return true;
   }
 }
-// Removed automatic side-effect to prevent startup console errors
-// testConnection().catch(() => {});
+testConnection().catch(() => {});
 
 /**
  * Force reconnect to Firestore cloud network

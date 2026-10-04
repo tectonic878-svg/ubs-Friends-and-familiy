@@ -3,8 +3,6 @@ import { createServer as createViteServer } from 'vite';
 import fs from 'fs';
 import path from 'path';
 import JSZip from 'jszip';
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getFirestore, doc, getDoc, setDoc, collection, getDocs, orderBy, query } from 'firebase/firestore';
 
 const app = express();
 const PORT = 3000;
@@ -37,20 +35,6 @@ if (!fs.existsSync(SETTINGS_FILE)) {
 }
 if (!fs.existsSync(DOCS_MANIFEST_FILE)) {
   fs.writeFileSync(DOCS_MANIFEST_FILE, JSON.stringify({}, null, 2), 'utf8');
-}
-
-// Initialize Firebase for optional cloud backup
-let firestoreDb: any = null;
-try {
-  const configPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
-  if (fs.existsSync(configPath)) {
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    const firebaseApp = getApps().length > 0 ? getApp() : initializeApp(config);
-    firestoreDb = getFirestore(firebaseApp, config.firestoreDatabaseId);
-    console.log('[Server] Firebase Firestore ulandi:', config.projectId);
-  }
-} catch (fbInitErr) {
-  console.warn('[Server] Firebase ogohlantirish:', fbInitErr);
 }
 
 // In-memory read helpers
@@ -423,67 +407,6 @@ async function findOrFetchDocument(idOrName: string): Promise<{ filePath: string
     }
   } catch (appScanErr) {
     console.warn('Scan applications error:', appScanErr);
-  }
-
-  // 6. Fallback to Google Firestore 'stored_files' if not found on disk
-  if (firestoreDb) {
-    try {
-      const candidateKeys = [cleanId];
-      if (digitsOnly.length >= 7) {
-        candidateKeys.push(digitsOnly);
-        if (digitsOnly.startsWith('998')) candidateKeys.push(digitsOnly.slice(3));
-        else candidateKeys.push('998' + digitsOnly);
-      }
-
-      for (const [k, m] of Object.entries(manifest)) {
-        if (m.name.includes(cleanId) && !candidateKeys.includes(k)) candidateKeys.push(k);
-      }
-
-      for (const k of candidateKeys) {
-        const fileRef = doc(firestoreDb, 'stored_files', k);
-        const fileSnap = await getDoc(fileRef);
-        if (fileSnap.exists()) {
-          const fileData = fileSnap.data();
-          let base64 = '';
-
-          if (!fileData.isChunked && fileData.data) {
-            base64 = fileData.data;
-          } else if (fileData.isChunked) {
-            const chunksCol = collection(firestoreDb, 'stored_files', k, 'chunks');
-            const chunksQuery = query(chunksCol, orderBy('chunkIndex', 'asc'));
-            const chunksSnap = await getDocs(chunksQuery);
-            const parts: string[] = [];
-            chunksSnap.forEach((c) => parts.push(c.data().data));
-            base64 = parts.join('');
-          }
-
-          if (base64) {
-            const buffer = Buffer.from(base64, 'base64');
-            const restoredPath = path.join(DOCS_DIR, `${cleanId}.pdf`);
-            fs.writeFileSync(restoredPath, buffer);
-
-            manifest[cleanId] = {
-              id: cleanId,
-              name: fileData.name || `${cleanId}.pdf`,
-              type: 'pdf',
-              size: fileData.size || `${(buffer.length / (1024 * 1024)).toFixed(2)} MB`,
-              mime: fileData.mimeType || 'application/pdf',
-              path: restoredPath
-            };
-            saveDocsManifest(manifest);
-
-            console.log(`[Firestore Recovery] Fayl Firestore bulutidan tiklandi: ${cleanId}.pdf`);
-            return {
-              filePath: restoredPath,
-              filename: fileData.name || `${cleanId}.pdf`,
-              mime: fileData.mimeType || 'application/pdf'
-            };
-          }
-        }
-      }
-    } catch (fbFetchErr) {
-      console.warn('Firestore fallback xatosi:', fbFetchErr);
-    }
   }
 
   return null;

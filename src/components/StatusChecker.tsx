@@ -140,6 +140,61 @@ export const StatusChecker: React.FC<StatusCheckerProps> = ({ applications, onPr
                     <p className="text-slate-600">{app.adminNotes}</p>
                   </div>
                 )}
+
+                {/* Uploaded Documents List */}
+                <div className="pt-3 border-t border-slate-100">
+                  <span className="text-xs font-semibold text-slate-700 block mb-2">Yuklangan PDF Hujjatlar:</span>
+                  <div className="flex flex-wrap gap-2">
+                    {app.type === 'friends' ? (
+                      <>
+                        {app.applicantStudent.passportDoc && (
+                          <button
+                            type="button"
+                            onClick={() => onPreviewDoc(app.applicantStudent.passportDoc!)}
+                            className="px-3 py-1.5 rounded-xl bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 text-xs text-slate-700 flex items-center gap-1.5 transition cursor-pointer"
+                          >
+                            <FileText className="w-3.5 h-3.5 text-rose-500" />
+                            <span className="truncate max-w-[150px]">{app.applicantStudent.passportDoc.name}</span>
+                            {app.applicantStudent.passportDoc.driveFileId && (
+                              <span className="text-[10px] px-1.5 py-0.2 bg-blue-100 text-blue-700 rounded-md font-mono">Drive</span>
+                            )}
+                          </button>
+                        )}
+                        {app.applicantStudent.certificateDoc && (
+                          <button
+                            type="button"
+                            onClick={() => onPreviewDoc(app.applicantStudent.certificateDoc!)}
+                            className="px-3 py-1.5 rounded-xl bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 text-xs text-slate-700 flex items-center gap-1.5 transition cursor-pointer"
+                          >
+                            <FileText className="w-3.5 h-3.5 text-rose-500" />
+                            <span className="truncate max-w-[150px]">{app.applicantStudent.certificateDoc.name}</span>
+                            {app.applicantStudent.certificateDoc.driveFileId && (
+                              <span className="text-[10px] px-1.5 py-0.2 bg-blue-100 text-blue-700 rounded-md font-mono">Drive</span>
+                            )}
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      app.members.map((m) => (
+                        <React.Fragment key={m.id}>
+                          {m.passportDoc && (
+                            <button
+                              type="button"
+                              onClick={() => onPreviewDoc(m.passportDoc!)}
+                              className="px-3 py-1.5 rounded-xl bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 text-xs text-slate-700 flex items-center gap-1.5 transition cursor-pointer"
+                            >
+                              <FileText className="w-3.5 h-3.5 text-rose-500" />
+                              <span className="truncate max-w-[150px]">{m.passportDoc.name}</span>
+                              {m.passportDoc.driveFileId && (
+                                <span className="text-[10px] px-1.5 py-0.2 bg-blue-100 text-blue-700 rounded-md font-mono">Drive</span>
+                              )}
+                            </button>
+                          )}
+                        </React.Fragment>
+                      ))
+                    )}
+                  </div>
+                </div>
               </div>
             ))
           )}

@@ -1,12 +1,11 @@
 {
-  "projectId": "bustling-wonder-hlk09",
-  "appId": "1:506355503659:web:4acfd0a5b90c77c4f8906e",
-  "apiKey": "AIzaSyBz9jVZG_F_wGeJocRt-iVbqnUEyuW_yWg",
-  "authDomain": "bustling-wonder-hlk09.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-ubsfriendsfamily-b5358230-3f73-4d0e-98cb-31ecc74c430a",
-  "storageBucket": "bustling-wonder-hlk09.firebasestorage.app",
-  "messagingSenderId": "506355503659",
+  "projectId": "gen-lang-client-0750944475",
+  "appId": "1:94733374934:web:a6b3ebc478369d769dc077",
+  "apiKey": "AIzaSyCBfXFOfiJQGRzLXSAnk2KpBzt96_jqUGc",
+  "authDomain": "gen-lang-client-0750944475.firebaseapp.com",
+  "storageBucket": "gen-lang-client-0750944475.firebasestorage.app",
+  "messagingSenderId": "94733374934",
   "measurementId": "",
-  "oAuthClientId": "506355503659-frve8e7i0pljfjn8d7cchmj7bo4111dq.apps.googleusercontent.com",
+  "oAuthClientId": "94733374934-jufi0kjq2o2i1n7o6812q52onbl13ein.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }

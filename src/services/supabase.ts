@@ -85,6 +85,28 @@ export async function testSupabaseConnection(): Promise<boolean> {
 }
 
 /**
+ * Fetch all applications from Supabase for migration purposes
+ */
+export async function fetchAllApplicationsFromSupabase(): Promise<AnyApplication[]> {
+  try {
+    const { data, error } = await supabase
+      .from('applications')
+      .select('data')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.warn('Supabase barcha arizalarni olishda xatolik:', error.message);
+      return [];
+    }
+
+    return (data || []).map(item => item.data as AnyApplication);
+  } catch (err) {
+    console.warn('Supabase fetch all exception:', err);
+    return [];
+  }
+}
+
+/**
  * Save or update an application in Supabase
  */
 export async function saveApplicationToSupabase(appData: AnyApplication): Promise<void> {

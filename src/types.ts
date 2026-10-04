@@ -6,9 +6,11 @@ export interface DocumentFile {
   name: string;
   type: 'image' | 'pdf';
   url: string;
-  dataUrl?: string; // Raw base64 data for local computer server disk persistence
   uploadedAt: string;
   size?: string;
+  driveFileId?: string;
+  driveWebViewLink?: string;
+  driveDownloadLink?: string;
 }
 
 export interface StudentInfo {

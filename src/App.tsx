@@ -17,15 +17,31 @@ import {
   AdminCredentials 
 } from './types';
 import { 
-  subscribeApplicationsSupabase, 
-  saveApplicationToSupabase, 
-  updateApplicationStatusInSupabase,
-  subscribeContractSettingsSupabase,
-  saveContractSettingsToSupabase,
-  subscribeAdminCredentialsSupabase,
-  saveAdminCredentialsToSupabase,
-  testSupabaseConnection
-} from './services/supabase';
+  subscribeApplications, 
+  saveApplicationToFirestore, 
+  updateApplicationStatusInFirestore,
+  subscribeContractSettings,
+  saveContractSettingsToFirestore,
+  subscribeAdminCredentials,
+  saveAdminCredentialsToFirestore,
+  testConnection as testFirebaseConnection
+} from './services/firebase';
+import {
+  saveApplicationToServer,
+  updateApplicationStatusOnServer,
+  bulkImportApplicationsToServer,
+  saveContractSettingsToServer,
+  saveAdminCredentialsToServer,
+  testServerConnection,
+  subscribeServerData
+} from './services/serverDb';
+import { 
+  processAndUploadApplicationDocs, 
+  appendApplicationToGoogleSheets, 
+  updateApplicationStatusInGoogleSheets,
+  getAccessToken 
+} from './services/googleWorkspace';
+import { optimizeApplicationForCloud, mergeLocalDocumentUrls } from './utils/cloudSyncOptimizer';
 import { CheckCircle2, CloudCheck, WifiOff } from 'lucide-react';
 import { UBSLogo } from './components/UBSLogo';
 
@@ -98,17 +114,25 @@ export default function App() {
   // Manual reconnect handler
   const handleReconnectCloud = async () => {
     setIsReconnecting(true);
-    showToast('Supabase bulutli bazasiga ulanish tekshirilmoqda...');
+    showToast('Google Cloud Firestore bazasi bilan aloqa tekshirilmoqda...');
     try {
-      const ok = await testSupabaseConnection();
-      if (ok) {
+      const fireOk = await testFirebaseConnection();
+      if (fireOk) {
         setIsCloudConnected(true);
         setIsQuotaExceeded(false);
         setSyncKey((prev) => prev + 1);
-        showToast('✅ Supabase bulutli bazasi bilan aloqa faol va cheksiz!');
+        showToast('✅ Google Cloud Firestore bazasi bilan aloqa faol va xavfsiz!');
       } else {
-        setIsCloudConnected(false);
-        showToast('⚠️ Supabase bazasiga ulanib bo‘lmadi. Internet aloqasini tekshiring.');
+        const serverOk = await testServerConnection();
+        if (serverOk) {
+          setIsCloudConnected(true);
+          setIsQuotaExceeded(false);
+          setSyncKey((prev) => prev + 1);
+          showToast('✅ Markaziy server bazasi faol!');
+        } else {
+          setIsCloudConnected(false);
+          showToast('⚠️ Baza bilan aloqa tiklanmadi. Lokal xotira rejimi faol.');
+        }
       }
     } catch {
       setIsCloudConnected(false);
@@ -118,71 +142,112 @@ export default function App() {
     }
   };
 
-  // 1. REAL-TIME CLOUD SYNCHRONIZATION WITH SUPABASE POSTGRESQL
-  // Connects all 7 admins and students without free daily request quota limits!
+  // 1. DUAL SYNCHRONIZATION: GOOGLE FIRESTORE + INDEPENDENT SERVER DB
+  // Real-time synchronization across all 7 admins and students with zero quota bottlenecks
   useEffect(() => {
-    const handleSyncError = (err: Error) => {
-      console.warn('Supabase sinxronizatsiya ogohlantirish:', err.message);
-      setIsCloudConnected(false);
-    };
+    let isMounted = true;
 
-    // Subscribe to all applications from Supabase
-    const unsubscribeApps = subscribeApplicationsSupabase(
-      (cloudApps) => {
+    // Check Firebase and Server connection immediately
+    testFirebaseConnection().then((fireOk) => {
+      if (fireOk && isMounted) {
         setIsCloudConnected(true);
         setIsQuotaExceeded(false);
-        // If Supabase is brand new and has 0 apps, but local storage had apps, seed local apps to Supabase
-        if (cloudApps.length === 0) {
+      } else {
+        testServerConnection().then((servOk) => {
+          if (servOk && isMounted) {
+            setIsCloudConnected(true);
+            setIsQuotaExceeded(false);
+          }
+        });
+      }
+    });
+
+    // 1. Subscribe to Google Cloud Firestore applications
+    const unsubscribeFirestoreApps = subscribeApplications(
+      (firestoreApps) => {
+        if (!isMounted) return;
+        setIsCloudConnected(true);
+        setIsQuotaExceeded(false);
+
+        if (firestoreApps.length > 0) {
+          // Merge local documents with lightweight firestore state
+          setApplications((prev) => {
+            const merged = mergeLocalDocumentUrls(firestoreApps, prev);
+            // Backup to local server
+            bulkImportApplicationsToServer(merged);
+            return merged;
+          });
+        } else {
+          // If Firestore is brand new and has 0 apps, check if we have local/server apps to seed
           const cached = localStorage.getItem('unigrant_applications');
           if (cached) {
             try {
               const parsed: AnyApplication[] = JSON.parse(cached);
               if (parsed.length > 0) {
                 parsed.forEach((appItem) => {
-                  saveApplicationToSupabase(appItem).catch(() => {});
+                  const optimized = optimizeApplicationForCloud(appItem);
+                  saveApplicationToFirestore(optimized).catch(() => {});
                 });
+                bulkImportApplicationsToServer(parsed);
                 setApplications(parsed);
-                return;
               }
             } catch {
               // ignore
             }
           }
         }
-        setApplications(cloudApps);
       },
-      handleSyncError
+      (err) => {
+        console.warn('Firestore sinxronizatsiya ogohlantirish:', err.message);
+      }
     );
 
-    // Subscribe to contract pricing settings
-    const unsubscribeSettings = subscribeContractSettingsSupabase(
+    // 2. Subscribe to contract settings from Firestore
+    const unsubscribeFirestoreSettings = subscribeContractSettings(
       (cloudSettings) => {
+        if (!isMounted) return;
         if (cloudSettings) {
           setContractSettings(cloudSettings);
         } else {
-          // Initialize Supabase database with current contract settings
-          saveContractSettingsToSupabase(contractSettings).catch(() => {});
+          saveContractSettingsToFirestore(contractSettings).catch(() => {});
         }
       },
-      handleSyncError
+      (err) => console.warn('Firestore settings listener:', err.message)
     );
 
-    // Subscribe to admin credentials from Supabase
-    const unsubscribeAdminCreds = subscribeAdminCredentialsSupabase(
+    // 3. Subscribe to admin credentials from Firestore
+    const unsubscribeFirestoreCreds = subscribeAdminCredentials(
       (cloudCreds) => {
+        if (!isMounted) return;
         if (cloudCreds) {
           setAdminCredentials(cloudCreds);
         } else {
-          // Initialize Supabase database with default admin credentials
-          saveAdminCredentialsToSupabase(adminCredentials).catch(() => {});
+          saveAdminCredentialsToFirestore(adminCredentials).catch(() => {});
         }
       },
-      handleSyncError
+      (err) => console.warn('Firestore admin creds listener:', err.message)
+    );
+
+    // 4. Background polling from independent server DB as secondary sync
+    const unsubscribeServer = subscribeServerData(
+      (serverApps) => {
+        if (!isMounted) return;
+        if (serverApps.length > 0) {
+          setApplications((prev) => {
+            // Only update if server has apps and firestore is empty or offline
+            if (prev.length === 0) return serverApps;
+            return prev;
+          });
+        }
+      },
+      () => {},
+      () => {},
+      10000 // gentle 10s interval
     );
 
     // Online / Offline browser event listeners
     const handleOnline = () => {
-      testSupabaseConnection().then((connected) => {
+      testFirebaseConnection().then((connected) => {
         if (connected) {
           setIsCloudConnected(true);
           setIsQuotaExceeded(false);
@@ -199,9 +264,11 @@ export default function App() {
     window.addEventListener('offline', handleOffline);
 
     return () => {
-      unsubscribeApps();
-      unsubscribeSettings();
-      unsubscribeAdminCreds();
+      isMounted = false;
+      unsubscribeFirestoreApps();
+      unsubscribeFirestoreSettings();
+      unsubscribeFirestoreCreds();
+      unsubscribeServer();
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
@@ -280,24 +347,70 @@ export default function App() {
     showToast('Tizimdan chiqildi.');
   };
 
-  // Submit application by student (persisted directly into Supabase PostgreSQL)
+  // Import backup handler
+  const handleImportBackup = async (importedApps: AnyApplication[]) => {
+    // 1. Update state
+    const currentMap = new Map();
+    applications.forEach((a) => currentMap.set(a.id, a));
+    importedApps.forEach((a) => currentMap.set(a.id, a));
+    const merged = Array.from(currentMap.values());
+    setApplications(merged);
+
+    // 2. Save to local server
+    await bulkImportApplicationsToServer(importedApps);
+
+    // 3. Save to Google Firestore
+    importedApps.forEach((app) => {
+      const optimized = optimizeApplicationForCloud(app);
+      saveApplicationToFirestore(optimized).catch(() => {});
+    });
+
+    showToast(`✅ ${importedApps.length} ta ariza Google Cloud bazasiga muvaffaqiyatli tiklandi!`);
+  };
+
+  // Submit application by student (persisted to Google Drive + Sheets, Firestore & Independent Server DB)
   const handleSubmitApplication = async (app: AnyApplication) => {
+    let appToSave = app;
+
+    // 1. If Google Workspace token is active, upload PDFs to Google Drive & append row to Google Sheets
+    try {
+      const token = await getAccessToken();
+      if (token) {
+        showToast('📁 PDF fayllar Google Drive jildiga yuklanmoqda...');
+        appToSave = await processAndUploadApplicationDocs(app, (msg) => {
+          showToast(`📁 ${msg}`);
+        });
+        await appendApplicationToGoogleSheets(appToSave);
+        console.log('Ariza Google Sheets va Drive ga saqlandi:', appToSave.id);
+      }
+    } catch (gErr: any) {
+      console.warn('Google Workspace saqlash ogohlantirish:', gErr);
+    }
+
     // Optimistic local update
-    setApplications((prev) => [app, ...prev.filter((item) => item.id !== app.id)]);
-    showToast(`✅ ${app.id} raqamli ariza markaziy bulut bazasiga yuborildi!`);
+    setApplications((prev) => [appToSave, ...prev.filter((item) => item.id !== appToSave.id)]);
+    showToast(`✅ ${appToSave.id} raqamli ariza bazaga yuborildi!`);
     setActiveTab('status');
 
-    // Supabase cloud save
+    // Save to Google Cloud Firestore (optimized lightweight, PDF binary is on Drive)
     try {
-      await saveApplicationToSupabase(app);
-      console.log('Ariza Supabase bulutiga muvaffaqiyatli saqlandi:', app.id);
-    } catch (error) {
-      console.error('Supabase saqlashda xatolik:', error);
-      showToast('⚠️ Ariza mahalliy saqlandi, tarmoq ulanganda bulutga sinxronlanadi.');
+      const optimized = optimizeApplicationForCloud(appToSave);
+      await saveApplicationToFirestore(optimized);
+      console.log('Ariza Firestore bulutiga muvaffaqiyatli saqlandi:', appToSave.id);
+    } catch (err) {
+      console.warn('Firestore saqlash ogohlantirish:', err);
+    }
+
+    // Also backup to independent server DB
+    try {
+      await saveApplicationToServer(appToSave);
+      console.log('Ariza server bazasiga saqlandi:', appToSave.id);
+    } catch (err) {
+      console.warn('Serverga saqlash xatosi:', err);
     }
   };
 
-  // Status update by admin (persisted directly into Supabase PostgreSQL)
+  // Status update by admin (persisted to Google Firestore, Sheets & Server DB)
   const handleUpdateStatus = async (id: string, status: ApplicationStatus, notes?: string) => {
     // Optimistic local update
     setApplications((prev) =>
@@ -305,36 +418,67 @@ export default function App() {
     );
     showToast(status === 'tasdiqlandi' ? '✅ 10% chegirma arizasi tasdiqlandi!' : '⚠️ Ariza holati yangilandi.');
 
-    // Supabase cloud update
+    // Save to Google Cloud Firestore
     try {
-      await updateApplicationStatusInSupabase(id, status, notes);
-      console.log('Ariza holati Supabase bulutida yangilandi:', id, status);
-    } catch (error) {
-      console.error('Supabase holat yangilashda xatolik:', error);
+      await updateApplicationStatusInFirestore(id, status, notes);
+      console.log('Ariza holati Firestore bulutida yangilandi:', id, status);
+    } catch (err) {
+      console.warn('Firestore holat yangilash ogohlantirish:', err);
     }
+
+    // Update in Google Sheets if connected
+    updateApplicationStatusInGoogleSheets(id, status, notes).catch((err) => {
+      console.warn('Google Sheets holat yangilash ogohlantirish:', err);
+    });
+
+    // Also update on local server DB
+    try {
+      await updateApplicationStatusOnServer(id, status, notes);
+    } catch (err) {
+      console.warn('Serverda holatni yangilash xatosi:', err);
+    }
+  };
+
+  // Sync all applications to Google Sheets & Google Drive (Admin feature)
+  const handleSyncToGoogle = async () => {
+    const token = await getAccessToken();
+    if (!token) {
+      throw new Error('Google hisobi ulanmagan. Iltimos, avval Google bilan kiring.');
+    }
+    showToast('Google Drive va Sheets ga barcha arizalar sinxronlanmoqda...');
+    
+    for (let i = 0; i < applications.length; i++) {
+      const currentApp = applications[i];
+      const processed = await processAndUploadApplicationDocs(currentApp, (msg) => {
+        showToast(msg);
+      });
+      await appendApplicationToGoogleSheets(processed);
+    }
+    showToast('✅ Barcha arizalar Google Drive va Google Sheets ga muvaffaqiyatli saqlandi!');
   };
 
   // Contract settings update by admin
   const handleUpdateContractSettings = async (newSettings: ContractSettings) => {
     setContractSettings(newSettings);
     try {
-      await saveContractSettingsToSupabase(newSettings);
-      showToast('Shartnoma narxlari barcha 7 ta admin va talabalar uchun Supabase bazasida yangilandi.');
+      await saveContractSettingsToFirestore(newSettings);
+      showToast('Shartnoma narxlari barcha 7 ta admin va talabalar uchun Google Cloud bazasida yangilandi.');
     } catch (error) {
-      console.error('Shartnoma narxlarini Supabase bulutiga saqlash xatosi:', error);
+      console.error('Shartnoma narxlarini saqlash xatosi:', error);
     }
+    saveContractSettingsToServer(newSettings).catch(() => {});
   };
 
   // Admin credentials update by admin from AdminPortal
   const handleUpdateAdminCredentials = async (newCreds: AdminCredentials) => {
     setAdminCredentials(newCreds);
     try {
-      await saveAdminCredentialsToSupabase(newCreds);
-      showToast('✅ Admin logini va paroli Supabase bulut bazasida barcha 7 ta admin uchun yangilandi!');
+      await saveAdminCredentialsToFirestore(newCreds);
+      showToast('✅ Admin logini va paroli barcha 7 ta admin uchun Google Cloud bazasida yangilandi!');
     } catch (error) {
-      console.error('Admin parolini Supabase bulutiga saqlashda xatolik:', error);
-      showToast('⚠️ Parol lokal saqlandi, ammo bulutga yozishda xatolik yuz berdi.');
+      console.error('Admin parolini saqlashda xatolik:', error);
     }
+    saveAdminCredentialsToServer(newCreds).catch(() => {});
   };
 
   // If user is not authenticated, show ONLY the login/registration screen
@@ -392,7 +536,8 @@ export default function App() {
             onReconnectCloud={handleReconnectCloud}
             adminCredentials={adminCredentials}
             onUpdateAdminCredentials={handleUpdateAdminCredentials}
-            onResetApplicationsList={() => setApplications([])}
+            onImportBackup={handleImportBackup}
+            onSyncToGoogle={handleSyncToGoogle}
           />
         ) : (
           /* ================= STUDENT VIEW ================= */

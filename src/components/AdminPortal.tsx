@@ -30,15 +30,8 @@ import {
   RotateCcw,
   HeartHandshake,
   RefreshCw,
-  Database,
-  Trash2,
-  HardDrive,
-  AlertTriangle,
-  Copy,
-  Sparkles,
-  ShieldAlert,
-  Server,
-  Globe
+  HardDriveDownload,
+  HardDriveUpload
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { 
@@ -60,18 +53,8 @@ import {
   loadVideoData, 
   DEFAULT_VIDEOS 
 } from '../utils/videoStorage';
-import { 
-  deleteAllApplicationsFromSupabase, 
-  purgeHeavyFilesFromSupabase, 
-  calculateStorageUsage,
-  getSupabaseCredentials,
-  saveCustomSupabaseCredentials,
-  resetSupabaseCredentialsToDefault,
-  reinitializeSupabaseClient,
-  testSupabaseConnection,
-  DEFAULT_SUPABASE_URL,
-  DEFAULT_SUPABASE_ANON_KEY
-} from '../services/supabase';
+
+import { GoogleWorkspaceBar } from './GoogleWorkspaceBar';
 
 interface AdminPortalProps {
   applications: AnyApplication[];
@@ -86,7 +69,8 @@ interface AdminPortalProps {
   onReconnectCloud?: () => void;
   adminCredentials?: AdminCredentials;
   onUpdateAdminCredentials?: (credentials: AdminCredentials) => void;
-  onResetApplicationsList?: () => void;
+  onImportBackup?: (apps: AnyApplication[]) => Promise<void> | void;
+  onSyncToGoogle?: () => Promise<void>;
 }
 
 export const AdminPortal: React.FC<AdminPortalProps> = ({
@@ -102,7 +86,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   onReconnectCloud,
   adminCredentials,
   onUpdateAdminCredentials,
-  onResetApplicationsList,
+  onImportBackup,
+  onSyncToGoogle,
 }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(true);
   const [adminUsername, setAdminUsername] = useState('ubs_admin');
@@ -140,20 +125,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [isVideoModalOpen, setIsVideoModalOpen] = useState(false);
   const [activeVideoTab, setActiveVideoTab] = useState<'friends' | 'family'>('friends');
   
-  // Storage & Supabase Database Clear/Reset Modal State
-  const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
-  const [isClearingDb, setIsClearingDb] = useState(false);
-  const [confirmPurgeText, setConfirmPurgeText] = useState('');
-  const [storageFeedback, setStorageFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-  const [sqlCopied, setSqlCopied] = useState(false);
-
-  // Custom Supabase Project Credentials Form
-  const currentCreds = getSupabaseCredentials();
-  const [customSupabaseUrl, setCustomSupabaseUrl] = useState(currentCreds.url);
-  const [customSupabaseKey, setCustomSupabaseKey] = useState(currentCreds.key);
-  const [isTestingSupabaseConfig, setIsTestingSupabaseConfig] = useState(false);
-  const [supabaseConfigMsg, setSupabaseConfigMsg] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-
   const [friendsVideoSrc, setFriendsVideoSrc] = useState<string>(DEFAULT_VIDEOS.friends.src);
   const [friendsVideoTitle, setFriendsVideoTitle] = useState<string>(DEFAULT_VIDEOS.friends.name);
 
@@ -306,6 +277,73 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     }
   };
 
+  // EXPORT COMPLETE DATABASE TO LOCAL JSON FILE
+  const handleExportFullBackup = () => {
+    try {
+      if (applications.length === 0) {
+        showToast('Zaxiralash uchun arizalar mavjud emas.');
+        return;
+      }
+      const backupPayload = {
+        exportDate: new Date().toISOString(),
+        totalApplications: applications.length,
+        system: 'UBS Friends and Family Grant Portal',
+        applications: applications,
+      };
+      const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(
+        JSON.stringify(backupPayload, null, 2)
+      )}`;
+      const downloadAnchor = document.createElement('a');
+      downloadAnchor.setAttribute('href', jsonString);
+      downloadAnchor.setAttribute(
+        'download',
+        `UBS_Arizalar_Barcha_Zaxira_${new Date().toISOString().slice(0, 10)}.json`
+      );
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
+      showToast(`✅ Barcha ${applications.length} ta ariza (barcha PDF hujjatlari bilan) kompyuteringizga zaxira fayl bo‘lib yuklandi!`);
+    } catch (err) {
+      console.error('Zaxiralash xatosi:', err);
+      showToast('⚠️ Zaxira faylini yaratishda xatolik yuz berdi.');
+    }
+  };
+
+  // IMPORT DATABASE FROM LOCAL JSON FILE
+  const handleTriggerImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const content = event.target?.result as string;
+        const parsed = JSON.parse(content);
+        const appsList: AnyApplication[] = Array.isArray(parsed) 
+          ? parsed 
+          : parsed.applications || [];
+
+        if (!Array.isArray(appsList) || appsList.length === 0) {
+          showToast('⚠️ Tanlangan faylda arizalar ma’lumoti topilmadi.');
+          return;
+        }
+
+        if (onImportBackup) {
+          await onImportBackup(appsList);
+          showToast(`✅ Zaxiradagi ${appsList.length} ta ariza muvaffaqiyatli tiklandi va saqlandi!`);
+        } else {
+          showToast(`✅ ${appsList.length} ta ariza topildi.`);
+        }
+      } catch (err) {
+        console.error('Zaxirani o‘qish xatosi:', err);
+        showToast('⚠️ Fayl noto‘g‘ri formatda yoki buzilgan.');
+      }
+    };
+    reader.readAsText(file);
+    // Reset input
+    e.target.value = '';
+  };
+
   const handleOpenChangePasswordModal = () => {
     setNewAdminUsername(adminCredentials?.username || 'admin');
     setCurrentAdminPassword('');
@@ -363,151 +401,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     } else {
       setPasswordChangeError('Tizim xatoligi: Parolni saqlash xizmati ulanmagan.');
     }
-  };
-
-  // Database Storage Usage estimation
-  const storageStats = calculateStorageUsage(applications);
-  const storageQuotaMB = 1024; // 1 GB free Supabase limit
-  const storagePercent = Math.min(100, Number(((storageStats.totalMB / storageQuotaMB) * 100).toFixed(1)));
-
-  // Wipe / Delete ALL applications and attached PDF files to free 1GB
-  const handlePurgeAllApplications = async () => {
-    if (confirmPurgeText.trim().toUpperCase() !== 'TOZALASH') {
-      setStorageFeedback({
-        type: 'error',
-        message: 'Iltimos, tasdiqlash uchun maydonga katta harflar bilan "TOZALASH" so‘zini yozing.'
-      });
-      return;
-    }
-
-    setIsClearingDb(true);
-    setStorageFeedback(null);
-
-    try {
-      const result = await deleteAllApplicationsFromSupabase();
-      if (result.success) {
-        if (result.isEgressQuota) {
-          setStorageFeedback({
-            type: 'success',
-            message: result.error || '✅ Lokal arizalar va xotira 100% tozalandi. Supabase bulut bazasini ham 0 ga tushirish uchun quyidagi SQL buyrug‘idan foydalaning.'
-          });
-        } else {
-          setStorageFeedback({
-            type: 'success',
-            message: `✅ Supabase bazasidagi barcha arizalar va yuklangan fayllar to‘liq o‘chirildi! 1 GB xotira 100% bo‘shatildi.`
-          });
-        }
-        showToast('✅ Arizalar va xotira muvaffaqiyatli tozalandi!');
-        setConfirmPurgeText('');
-        if (onResetApplicationsList) {
-          onResetApplicationsList();
-        }
-      } else {
-        setStorageFeedback({
-          type: 'error',
-          message: `Xatolik yuz berdi: ${result.error || 'Noma’lum xato'}`
-        });
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Noma’lum xatolik';
-      setStorageFeedback({
-        type: 'error',
-        message: `Baza tozalashda xatolik: ${msg}`
-      });
-    } finally {
-      setIsClearingDb(false);
-    }
-  };
-
-  // Purge only large Base64 files while keeping application history
-  const handlePurgeFilesOnly = async () => {
-    setIsClearingDb(true);
-    setStorageFeedback(null);
-
-    try {
-      const result = await purgeHeavyFilesFromSupabase();
-      if (result.success) {
-        setStorageFeedback({
-          type: 'success',
-          message: `✅ ${result.count || 0} ta arizaning og‘ir PDF fayllari tozalandi. Arizalar ro‘yxati saqlanib qolgan holda xotira bo‘shatildi.`
-        });
-        showToast('✅ Yuklangan og‘ir fayllar tozalandi!');
-      } else {
-        setStorageFeedback({
-          type: 'error',
-          message: `Xatolik: ${result.error || 'Noma’lum xato'}`
-        });
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Noma’lum xatolik';
-      setStorageFeedback({
-        type: 'error',
-        message: `Fayllarni tozalashda xatolik: ${msg}`
-      });
-    } finally {
-      setIsClearingDb(false);
-    }
-  };
-
-  const handleCopySql = () => {
-    const sql = `TRUNCATE TABLE public.applications;`;
-    navigator.clipboard.writeText(sql);
-    setSqlCopied(true);
-    showToast('SQL buyrug‘i nusxalandi! Supabase SQL Editor bo‘limiga qo‘yishingiz mumkin.');
-    setTimeout(() => setSqlCopied(false), 3000);
-  };
-
-  // Save new/custom Supabase credentials and re-test connection
-  const handleSaveSupabaseConfig = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!customSupabaseUrl.trim() || !customSupabaseKey.trim()) {
-      setSupabaseConfigMsg({
-        type: 'error',
-        message: 'Iltimos, Supabase URL va Anon Key maydonlarini to‘ldiring.'
-      });
-      return;
-    }
-
-    setIsTestingSupabaseConfig(true);
-    setSupabaseConfigMsg(null);
-
-    try {
-      saveCustomSupabaseCredentials(customSupabaseUrl.trim(), customSupabaseKey.trim());
-      reinitializeSupabaseClient();
-      const isOk = await testSupabaseConnection();
-      if (isOk) {
-        setSupabaseConfigMsg({
-          type: 'success',
-          message: '✅ Yangi Supabase bazasiga ulanish muvaffaqiyatli o‘rnatildi! Baza to‘liq faol.'
-        });
-        showToast('✅ Supabase kalitlari yangilandi va ulandi!');
-      } else {
-        setSupabaseConfigMsg({
-          type: 'error',
-          message: '⚠️ Yangi ma’lumotlar saqlandi, lekin Supabase loyihasiga ulanib bo‘lmadi. URL yoki Anon Key ni tekshiring yoki SQL jadvalini yarating.'
-        });
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Noma’lum xato';
-      setSupabaseConfigMsg({
-        type: 'error',
-        message: `Ulanish xatosi: ${msg}`
-      });
-    } finally {
-      setIsTestingSupabaseConfig(false);
-    }
-  };
-
-  const handleResetSupabaseConfig = async () => {
-    resetSupabaseCredentialsToDefault();
-    setCustomSupabaseUrl(DEFAULT_SUPABASE_URL);
-    setCustomSupabaseKey(DEFAULT_SUPABASE_ANON_KEY);
-    reinitializeSupabaseClient();
-    setSupabaseConfigMsg({
-      type: 'success',
-      message: 'Standart Supabase loyihasi holatiga qaytarildi.'
-    });
-    showToast('Standart Supabase sozlamalari tiklandi.');
   };
 
   const handleLogin = (e: React.FormEvent) => {
@@ -817,6 +710,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         </div>
       )}
 
+      {/* Google Workspace Drive & Sheets Storage Bar */}
+      <GoogleWorkspaceBar onSyncAll={onSyncToGoogle} isAdmin={true} />
+
       {/* Admin Header with stats focused strictly on student info & application counts (NO financial totals) */}
       <div className="bg-slate-900 rounded-3xl p-6 text-white shadow-xl border border-slate-800">
         <div className="flex flex-wrap items-center justify-between gap-4">
@@ -826,9 +722,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               <div className="flex items-center gap-2">
                 <h1 className="text-lg font-bold text-white">UBS Ma’muriyati Admin Portali</h1>
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className={`text-[10px] ${isCloudConnected ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : isQuotaExceeded ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' : 'bg-slate-700/50 text-slate-300 border-slate-600'} px-2 py-0.5 rounded-full font-mono border flex items-center gap-1.5`}>
-                    <span className={`w-1.5 h-1.5 rounded-full ${isCloudConnected ? 'bg-emerald-400 animate-pulse' : isQuotaExceeded ? 'bg-amber-400' : 'bg-slate-400'}`} />
-                    {isCloudConnected ? 'Supabase Bulutli Baza Faol (7 ta Admin uchun Umumiy)' : isQuotaExceeded ? 'Lokal Rejim' : 'Oflayn Rejim'}
+                  <span className={`text-[10px] ${isCloudConnected ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-amber-500/20 text-amber-300 border-amber-500/30'} px-2 py-0.5 rounded-full font-mono border flex items-center gap-1.5`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${isCloudConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                    {isCloudConnected ? 'Google Cloud Firestore Faol (Cheksiz & 7 Admin uchun)' : 'Lokal Rejim'}
                   </span>
                   {onReconnectCloud && (
                     <button
@@ -882,8 +778,34 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               title="Barcha arizalarni Excel (.xlsx) formatida yuklab olish"
             >
               <FileSpreadsheet className="w-4 h-4 text-emerald-200" />
-              <span>Excel (.xlsx) yuklab olish</span>
+              <span>Excel (.xlsx)</span>
             </button>
+
+            {/* FULL DATABASE BACKUP DOWNLOAD (.json) */}
+            <button
+              onClick={handleExportFullBackup}
+              disabled={applications.length === 0}
+              className="px-3.5 py-2 bg-teal-600 hover:bg-teal-700 disabled:bg-slate-800 disabled:text-slate-500 text-white rounded-xl text-xs font-bold transition shadow-md flex items-center gap-1.5 cursor-pointer border border-teal-500/40"
+              title="Barcha arizalar, talabalar va barcha PDF hujjatlarni to‘liq kompyuteringizga zaxira fayl (.json) qilib yuklab olish"
+            >
+              <HardDriveDownload className="w-4 h-4 text-teal-200" />
+              <span>Zaxira yuklab olish (.json)</span>
+            </button>
+
+            {/* RESTORE DATABASE FROM BACKUP (.json) */}
+            <label
+              className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition shadow-md flex items-center gap-1.5 cursor-pointer border border-amber-500/40"
+              title="Avval yuklab olingan zaxira fayl (.json) dan arizalarni qayta tiklash"
+            >
+              <HardDriveUpload className="w-4 h-4 text-amber-200" />
+              <span>Zaxirani tiklash</span>
+              <input
+                type="file"
+                accept=".json"
+                onChange={handleTriggerImport}
+                className="hidden"
+              />
+            </label>
 
             {/* Change Admin Password Button (Accessible only from Admin Portal) */}
             <button
@@ -903,20 +825,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             >
               <VideoIcon className="w-3.5 h-3.5 text-blue-400" />
               <span>Video qo‘llanma yuklash</span>
-            </button>
-
-            {/* Database & Storage 1GB Purge Button */}
-            <button
-              onClick={() => {
-                setConfirmPurgeText('');
-                setStorageFeedback(null);
-                setIsStorageModalOpen(true);
-              }}
-              className="px-3.5 py-2 bg-rose-950/40 hover:bg-rose-900/50 text-rose-300 hover:text-rose-100 rounded-xl text-xs font-semibold transition border border-rose-700/60 flex items-center gap-1.5 cursor-pointer shadow-xs"
-              title="Supabase PostgreSQL bazasi va yuklangan fayllarni tozalash (1 GB xotirani bo‘shatish)"
-            >
-              <HardDrive className="w-3.5 h-3.5 text-rose-400" />
-              <span>Baza & 1GB Tozalash ({storageStats.totalMB} MB)</span>
             </button>
 
             <button
@@ -970,10 +878,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
             <div>
               <p className="font-semibold text-amber-950">
-                Bulutli baza bilan aloqa oflayn rejimda
+                Lokal xotira rejimi faol
               </p>
               <p className="text-amber-700 mt-0.5">
-                Arizalar va sozlamalar hozircha lokal xotiradan olinmoqda. Aloqa tiklanganda barcha ma’lumotlar markaziy Supabase bazasiga avtomatik sinxronlanadi.
+                Arizalar va sozlamalar brauzer xotirasida xavfsiz saqlanmoqda. Yuqoridagi "Zaxira yuklab olish (.json)" tugmasi orqali barcha fayllarni kompyuteringizga saqlab olishingiz mumkin.
               </p>
             </div>
           </div>
@@ -1827,353 +1735,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   Standart ({activeVideoTab === 'friends' ? 'video_friends.mp4' : 'video_family.mp4'})
                 </button>
               </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ================= STORAGE & SUPABASE DATABASE RESET MODAL (1GB Purge) ================= */}
-      {isStorageModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 sm:p-7 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-200 max-h-[92vh] overflow-y-auto">
-            {/* Header */}
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100 mb-5">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center border border-rose-200">
-                  <Database className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-slate-900">Supabase Baza va 1 GB Xotirani Tozalash</h3>
-                  <p className="text-xs text-slate-500">Yuklangan fayllarni o‘chirish va ajratilgan 1 GB xotirani bo‘shatish</p>
-                </div>
-              </div>
-              <button 
-                onClick={() => setIsStorageModalOpen(false)}
-                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* Storage Usage Card */}
-            <div className="p-4 rounded-2xl bg-slate-900 text-white mb-5 border border-slate-800 shadow-md">
-              <div className="flex items-center justify-between text-xs mb-2">
-                <div className="flex items-center gap-2">
-                  <HardDrive className="w-4 h-4 text-rose-400" />
-                  <span className="font-semibold text-slate-200">Supabase Xotira Holati:</span>
-                </div>
-                <span className="font-mono font-bold text-rose-300">
-                  {storageStats.totalMB} MB / {storageQuotaMB} MB ({storagePercent}%)
-                </span>
-              </div>
-
-              {/* Progress bar */}
-              <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden mb-3 border border-slate-700/50">
-                <div 
-                  className={`h-full transition-all duration-500 rounded-full ${
-                    storagePercent > 80 ? 'bg-rose-500' : storagePercent > 50 ? 'bg-amber-500' : 'bg-emerald-500'
-                  }`}
-                  style={{ width: `${Math.max(2, storagePercent)}%` }}
-                />
-              </div>
-
-              <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-800/80 text-[11px]">
-                <div>
-                  <span className="text-slate-400 block">Jami arizalar:</span>
-                  <span className="font-bold text-white font-mono">{applications.length} ta</span>
-                </div>
-                <div>
-                  <span className="text-slate-400 block">Yuklangan fayllar:</span>
-                  <span className="font-bold text-amber-300 font-mono">{storageStats.totalFiles} ta PDF</span>
-                </div>
-                <div>
-                  <span className="text-slate-400 block">Band qilingan hajm:</span>
-                  <span className="font-bold text-rose-300 font-mono">{storageStats.totalMB} MB</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Storage Feedback Alert */}
-            {storageFeedback && (
-              <div className={`mb-5 p-3.5 rounded-2xl text-xs flex items-center gap-2.5 ${
-                storageFeedback.type === 'success' 
-                  ? 'bg-emerald-50 border border-emerald-200 text-emerald-800' 
-                  : 'bg-rose-50 border border-rose-200 text-rose-800'
-              }`}>
-                {storageFeedback.type === 'success' ? (
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                ) : (
-                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-                )}
-                <span className="font-medium">{storageFeedback.message}</span>
-              </div>
-            )}
-
-            <div className="space-y-4">
-              {/* Option 1: Complete Wipe & Restart (100% 1GB Free) */}
-              <div className="p-4 rounded-2xl border-2 border-rose-200 bg-rose-50/50">
-                <div className="flex items-start gap-3 mb-2">
-                  <div className="w-8 h-8 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0 mt-0.5 shadow-xs">
-                    <Trash2 className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h4 className="text-xs font-bold text-rose-950">
-                      1. Barcha arizalar va yuklangan fayllarni to‘liq o‘chirish (100% 1GB bo‘shatish)
-                    </h4>
-                    <p className="text-[11px] text-rose-700 mt-0.5 leading-relaxed">
-                      Supabase PostgreSQL bazasidagi barcha arizalar va ularga biriktirilgan barcha PDF hujjatlarni to‘liq o‘chiradi, 1 GB xotirani 0 MB ga qaytaradi va tizimni yangitdan boshlaydi.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="mt-3 pt-3 border-t border-rose-200/80">
-                  <label className="block text-[11px] font-semibold text-rose-900 mb-1.5">
-                    Tasdiqlash uchun quyidagi maydonga <span className="font-mono font-bold bg-white px-1.5 py-0.5 rounded-md border border-rose-300 text-rose-600">TOZALASH</span> so‘zini yozing:
-                  </label>
-                  <div className="flex flex-col sm:flex-row gap-2">
-                    <input
-                      type="text"
-                      value={confirmPurgeText}
-                      onChange={(e) => setConfirmPurgeText(e.target.value)}
-                      placeholder="TOZALASH"
-                      className="flex-1 px-3 py-2 text-xs border border-rose-300 rounded-xl focus:ring-2 focus:ring-rose-500 outline-hidden bg-white uppercase font-mono font-bold text-rose-900"
-                    />
-                    <button
-                      type="button"
-                      onClick={handlePurgeAllApplications}
-                      disabled={isClearingDb || confirmPurgeText.trim().toUpperCase() !== 'TOZALASH'}
-                      className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:bg-slate-300 disabled:text-slate-500 text-white rounded-xl text-xs font-bold transition shadow-md cursor-pointer disabled:cursor-not-allowed flex items-center justify-center gap-1.5 shrink-0"
-                    >
-                      {isClearingDb ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          <span>Tozalanmoqda...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Trash2 className="w-4 h-4" />
-                          <span>Bazani to‘liq tozalash</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* Option 2: Purge Heavy Base64 Files Only */}
-              <div className="p-4 rounded-2xl border border-amber-200 bg-amber-50/40">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-start gap-3">
-                    <div className="w-8 h-8 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 mt-0.5">
-                      <FileText className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <h4 className="text-xs font-bold text-amber-950">
-                        2. Faqat og‘ir PDF fayllarni tozalash (Arizalarni saqlagan holda)
-                      </h4>
-                      <p className="text-[11px] text-amber-800 mt-0.5">
-                        Talabalar arizalari ro‘yxati va holatlari saqlanadi, lekin ularning ichidagi og‘ir PDF fayllar olib tashlanadi va xotira bo‘shatiladi.
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handlePurgeFilesOnly}
-                    disabled={isClearingDb || applications.length === 0}
-                    className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 disabled:bg-slate-300 text-white rounded-xl text-xs font-semibold transition cursor-pointer disabled:cursor-not-allowed shrink-0"
-                  >
-                    Fayllarni tozalash
-                  </button>
-                </div>
-              </div>
-
-              {/* Option 3: Supabase SQL Editor Direct Purge Command */}
-              <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50">
-                <div className="flex items-center justify-between mb-1.5">
-                  <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
-                    <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
-                    <span>Supabase SQL Editor orqali 1 soniyada tozalash:</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleCopySql}
-                    className="text-[11px] font-medium text-indigo-600 hover:text-indigo-700 flex items-center gap-1 cursor-pointer bg-white px-2.5 py-1 rounded-lg border border-slate-200 hover:border-indigo-300 transition"
-                  >
-                    {sqlCopied ? <CheckCircle2 className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
-                    <span>{sqlCopied ? 'Nusxalandi!' : 'SQL nusxalash'}</span>
-                  </button>
-                </div>
-                <pre className="p-2.5 bg-slate-900 text-emerald-400 font-mono text-[11px] rounded-xl overflow-x-auto border border-slate-800">
-                  {`TRUNCATE TABLE public.applications;`}
-                </pre>
-                <p className="text-[10px] text-slate-500 mt-1.5">
-                  Supabase boshqaruv panelida <span className="font-semibold text-slate-700">SQL Editor</span> bo‘limiga o‘tib, ushbu kodni joylashtiring va <span className="font-semibold text-slate-700">"Run"</span> tugmasini bosing. PostgreSQL diskdagi barcha joyni bir zumda to‘liq bo‘shatadi.
-                </p>
-              </div>
-
-              {/* Option 4: Supabase Unpause & Restart Guide */}
-              <div className="p-4 rounded-2xl border border-blue-200 bg-blue-50/50">
-                <div className="flex items-center gap-2 mb-2">
-                  <RefreshCw className="w-4 h-4 text-blue-600" />
-                  <h4 className="text-xs font-bold text-blue-950">Supabase Bazasini Qayta Ishga Tushirish (Unpause / Restore)</h4>
-                </div>
-                <ol className="text-[11px] text-blue-900 space-y-1.5 list-decimal list-inside leading-relaxed">
-                  <li>
-                    <strong><a href="https://supabase.com/dashboard" target="_blank" rel="noreferrer" className="underline text-blue-700 hover:text-blue-900">Supabase Dashboard</a></strong> ga kiring.
-                  </li>
-                  <li>
-                    Agar loyihangizda <em>"Paused"</em> yoki <em>"Restricted"</em> yozuvi tursa, <strong className="text-emerald-700">"Restore Project"</strong> yoki <strong className="text-blue-700">"Resume"</strong> tugmasini bosing.
-                  </li>
-                  <li>
-                    Loyihangiz 1–2 daqiqada qayta ishga tushgach, ushbu sahifada <strong>"Qayta ulash"</strong> tugmasini bosing.
-                  </li>
-                </ol>
-              </div>
-
-              {/* Option 5: Connect New/Fresh Supabase Project */}
-              <div className="p-4 rounded-2xl border border-slate-200 bg-white shadow-xs">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <KeyRound className="w-4 h-4 text-slate-700" />
-                    <h4 className="text-xs font-bold text-slate-900">Yangi Supabase Bazasini Ulash (URL & Anon Key)</h4>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleResetSupabaseConfig}
-                    className="text-[10px] text-slate-500 hover:text-slate-800 underline cursor-pointer"
-                  >
-                    Standartga qaytarish
-                  </button>
-                </div>
-                <p className="text-[11px] text-slate-500 mb-3">
-                  Agar yangi bepul Supabase loyihasi ochgan bo‘lsangiz, uning ma’lumotlarini shu yerga kiriting:
-                </p>
-
-                {supabaseConfigMsg && (
-                  <div className={`mb-3 p-2.5 rounded-xl text-xs flex items-center gap-2 ${
-                    supabaseConfigMsg.type === 'success' 
-                      ? 'bg-emerald-50 border border-emerald-200 text-emerald-800' 
-                      : 'bg-rose-50 border border-rose-200 text-rose-800'
-                  }`}>
-                    {supabaseConfigMsg.type === 'success' ? (
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                    ) : (
-                      <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
-                    )}
-                    <span>{supabaseConfigMsg.message}</span>
-                  </div>
-                )}
-
-                <form onSubmit={handleSaveSupabaseConfig} className="space-y-2.5">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">Project URL</label>
-                    <input
-                      type="text"
-                      value={customSupabaseUrl}
-                      onChange={(e) => setCustomSupabaseUrl(e.target.value)}
-                      placeholder="https://xyzcompany.supabase.co"
-                      className="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-hidden bg-slate-50 font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">Project Anon Key (Public)</label>
-                    <input
-                      type="text"
-                      value={customSupabaseKey}
-                      onChange={(e) => setCustomSupabaseKey(e.target.value)}
-                      placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                      className="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-hidden bg-slate-50 font-mono"
-                    />
-                  </div>
-                  <div className="flex justify-end pt-1">
-                    <button
-                      type="submit"
-                      disabled={isTestingSupabaseConfig}
-                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer flex items-center gap-1.5"
-                    >
-                      {isTestingSupabaseConfig ? (
-                        <>
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          <span>Tekshirilmoqda...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Check className="w-3.5 h-3.5" />
-                          <span>Saqlash va Ulanish</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </form>
-              </div>
-
-              {/* Option 6: Personal Server (10GB) Connection */}
-              <div className="p-4 rounded-2xl border border-emerald-200 bg-emerald-50/40">
-                <div className="flex items-center gap-2 mb-2">
-                  <Server className="w-4 h-4 text-emerald-600" />
-                  <h4 className="text-xs font-bold text-emerald-950">Shaxsiy Server (10GB) ni Ulash</h4>
-                </div>
-                <p className="text-[11px] text-emerald-800 mb-3 leading-relaxed">
-                  Agar sizda shaxsiy Linux yoki Windows serveringiz bo‘lsa, ushbu dasturni to‘liq u yerga ko‘chirib, 10GB joyingizdan cheksiz foydalanishingiz mumkin.
-                </p>
-                
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2 p-2 bg-white rounded-xl border border-emerald-100">
-                    <div className="w-6 h-6 rounded-lg bg-emerald-100 text-emerald-600 flex items-center justify-center shrink-0">
-                      <Globe className="w-3.5 h-3.5" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[10px] font-bold text-slate-700">1. To‘liq o‘rnatish (Self-Hosted)</p>
-                      <p className="text-[9px] text-slate-500 truncate">Serveringizda Node.js o‘rnating va loyihani yuklang.</p>
-                    </div>
-                    <button 
-                      type="button"
-                      onClick={() => window.open('/api/tools/download-server-setup-guide', '_blank')}
-                      className="px-2 py-1 bg-emerald-600 text-white text-[9px] font-bold rounded-lg hover:bg-emerald-700 transition cursor-pointer"
-                    >
-                      Qo‘llanma
-                    </button>
-                  </div>
-
-                  <div className="flex items-center gap-2 p-2 bg-white rounded-xl border border-emerald-100">
-                    <div className="w-6 h-6 rounded-lg bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
-                      <HardDrive className="w-3.5 h-3.5" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[10px] font-bold text-slate-700">2. Tashqi Diskni Ulash (Remote API)</p>
-                      <p className="text-[9px] text-slate-500 truncate">Fayllarni boshqa serveringizga yuborish.</p>
-                    </div>
-                    <button 
-                      type="button"
-                      onClick={() => showToast('Tez kunda: Masofaviy server API orqali ulash funksiyasi qo‘shiladi.')}
-                      className="px-2 py-1 bg-indigo-600 text-white text-[9px] font-bold rounded-lg hover:bg-indigo-700 transition cursor-pointer"
-                    >
-                      Ulash
-                    </button>
-                  </div>
-                </div>
-
-                <div className="mt-3 p-2.5 bg-slate-900 rounded-xl border border-slate-800">
-                  <p className="text-[10px] text-emerald-400 font-mono flex items-center gap-1.5 mb-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    Serverda ishga tushirish buyrug‘i:
-                  </p>
-                  <code className="text-[10px] text-slate-300 font-mono block break-all">
-                    git clone [loyha-linki] && npm install && npm run build && npm start
-                  </code>
-                </div>
-              </div>
-            </div>
-
-            {/* Footer */}
-            <div className="pt-4 mt-5 border-t border-slate-100 flex items-center justify-end">
-              <button
-                type="button"
-                onClick={() => setIsStorageModalOpen(false)}
-                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition cursor-pointer"
-              >
-                Yopish
-              </button>
             </div>
           </div>
         </div>
