@@ -6,6 +6,7 @@ import {
   signOut 
 } from 'firebase/auth';
 import { auth } from './firebase';
+import firebaseConfig from '../../firebase-applet-config.json';
 import { AnyApplication, ApplicationStatus, DocumentFile } from '../types';
 
 export const WORKSPACE_SCOPES = [
@@ -22,35 +23,151 @@ provider.setCustomParameters({
 });
 
 let isSigningIn = false;
-let cachedAccessToken: string | null = null;
-let currentUser: User | null = null;
-
-// Sheet and Folder IDs cache in localStorage (so app reuses the same sheet and folder)
+const ACCESS_TOKEN_KEY = 'ubs_google_access_token';
 const DRIVE_FOLDER_ID_KEY = 'ubs_google_drive_folder_id';
 const SPREADSHEET_ID_KEY = 'ubs_google_spreadsheet_id';
 
+let cachedAccessToken: string | null = (() => {
+  try {
+    const saved = localStorage.getItem(ACCESS_TOKEN_KEY);
+    return saved && saved.trim() ? saved.trim() : null;
+  } catch {
+    return null;
+  }
+})();
+let currentUser: User | null = null;
+
+type AuthCallback = (user: User | any, token: string) => void;
+type FailureCallback = () => void;
+const authListeners: { onSuccess?: AuthCallback; onFailure?: FailureCallback }[] = [];
+
+function notifyListeners() {
+  const currentToken = getStoredToken();
+  if (currentToken) {
+    const userObj = currentUser || { email: 'Google Hisobi', displayName: 'Google Drive & Sheets' };
+    authListeners.forEach(l => l.onSuccess?.(userObj, currentToken));
+  } else {
+    authListeners.forEach(l => l.onFailure?.());
+  }
+}
+
+function getStoredToken(): string | null {
+  if (cachedAccessToken && cachedAccessToken.trim()) {
+    return cachedAccessToken.trim();
+  }
+  try {
+    const item = localStorage.getItem(ACCESS_TOKEN_KEY);
+    if (item && item.trim()) {
+      cachedAccessToken = item.trim();
+      return cachedAccessToken;
+    }
+  } catch {}
+  return null;
+}
+
 export const initAuth = (
-  onAuthSuccess?: (user: User, token: string) => void,
-  onAuthFailure?: () => void
+  onAuthSuccess?: AuthCallback,
+  onAuthFailure?: FailureCallback
 ) => {
-  return onAuthStateChanged(auth, async (user: User | null) => {
+  const listener = { onSuccess: onAuthSuccess, onFailure: onAuthFailure };
+  authListeners.push(listener);
+
+  // If token already present in localStorage/memory, trigger success immediately
+  const existingToken = getStoredToken();
+  if (existingToken && onAuthSuccess) {
+    onAuthSuccess(currentUser || { email: 'Google Foydalanuvchisi', displayName: 'Google Drive & Sheets' } as any, existingToken);
+  }
+
+  const unsubscribe = onAuthStateChanged(auth, async (user: User | null) => {
     currentUser = user;
+    const token = getStoredToken();
     if (user) {
-      if (cachedAccessToken) {
-        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
-      } else if (!isSigningIn) {
-        // Token might have expired or refreshed on reload
-        cachedAccessToken = null;
-        if (onAuthFailure) onAuthFailure();
+      if (token) {
+        onAuthSuccess?.(user, token);
       }
+    } else if (token) {
+      // Manual/GIS token is actively preserved in localStorage! Do NOT wipe it!
+      onAuthSuccess?.({ email: 'Google Foydalanuvchisi', displayName: 'Google Drive & Sheets' } as any, token);
     } else {
-      cachedAccessToken = null;
-      if (onAuthFailure) onAuthFailure();
+      onAuthFailure?.();
+    }
+  });
+
+  return () => {
+    const idx = authListeners.indexOf(listener);
+    if (idx !== -1) authListeners.splice(idx, 1);
+    unsubscribe();
+  };
+};
+
+export const setManualAccessToken = (token: string) => {
+  let clean = (token || '').trim();
+  // Strip "Bearer " prefix if user pasted it
+  if (clean.toLowerCase().startsWith('bearer ')) {
+    clean = clean.slice(7).trim();
+  }
+  // Strip surrounding quotes
+  if ((clean.startsWith('"') && clean.endsWith('"')) || (clean.startsWith("'") && clean.endsWith("'"))) {
+    clean = clean.slice(1, -1).trim();
+  }
+
+  cachedAccessToken = clean || null;
+  try {
+    if (clean) {
+      localStorage.setItem(ACCESS_TOKEN_KEY, clean);
+    } else {
+      localStorage.removeItem(ACCESS_TOKEN_KEY);
+    }
+  } catch {}
+
+  notifyListeners();
+};
+
+/**
+ * Direct Google Identity Services (GIS) Token Client fallback
+ */
+export const signInWithGoogleIdentityServices = (): Promise<{ accessToken: string } | null> => {
+  return new Promise((resolve, reject) => {
+    try {
+      const google = (window as any).google;
+      const clientId = (firebaseConfig as any).oAuthClientId;
+      if (!google?.accounts?.oauth2 || !clientId) {
+        throw new Error('Google Identity Services kutubxonasi yuklanmoqda...');
+      }
+
+      const client = google.accounts.oauth2.initTokenClient({
+        client_id: clientId,
+        scope: WORKSPACE_SCOPES.join(' '),
+        callback: (tokenResponse: any) => {
+          if (tokenResponse.error) {
+            const errStr = String(tokenResponse.error_description || tokenResponse.error);
+            if (errStr.includes('popup_blocked') || errStr.includes('popup') || errStr.includes('window')) {
+              reject(new Error('Brauzer qalqib chiquvchi oynani (popup) blokladi. Iltimos, brauzeringizda popup oynalarga ruxsat bering.'));
+            } else {
+              reject(new Error(tokenResponse.error_description || tokenResponse.error));
+            }
+            return;
+          }
+          if (tokenResponse.access_token) {
+            setManualAccessToken(tokenResponse.access_token);
+            resolve({ accessToken: tokenResponse.access_token });
+          } else {
+            reject(new Error('Kirish tokeni olinmadi'));
+          }
+        },
+        error_callback: (err: any) => {
+          reject(err);
+        }
+      });
+
+      client.requestAccessToken({ prompt: 'consent' });
+    } catch (e) {
+      reject(e);
     }
   });
 };
 
-export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
+export const googleSignIn = async (): Promise<{ user?: User | any; accessToken: string } | null> => {
   try {
     isSigningIn = true;
     const result = await signInWithPopup(auth, provider);
@@ -59,11 +176,22 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
       throw new Error('Google hisobidan kirish tokeni olinmadi');
     }
 
-    cachedAccessToken = credential.accessToken;
+    setManualAccessToken(credential.accessToken);
     currentUser = result.user;
-    return { user: result.user, accessToken: cachedAccessToken };
+    return { user: result.user, accessToken: credential.accessToken };
   } catch (error: any) {
-    console.error('Google Sign In xatolik:', error);
+    const code = error?.code || '';
+    const message = error?.message || '';
+    if (code === 'auth/unauthorized-domain' || message.includes('auth/unauthorized-domain')) {
+      const hostname = typeof window !== 'undefined' ? window.location.hostname : 'ushbu domen';
+      const cleanError = new Error(
+        `Domen avtorizatsiyalanmagan: '${hostname}'. Firebase Console -> Authentication -> Settings -> Authorized Domains ro'yxatiga '${hostname}' domenini qo'shing.`
+      );
+      (cleanError as any).code = 'auth/unauthorized-domain';
+      (cleanError as any).domain = hostname;
+      throw cleanError;
+    }
+    console.warn('Google Sign In:', error);
     throw error;
   } finally {
     isSigningIn = false;
@@ -71,7 +199,7 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
 };
 
 export const getAccessToken = async (): Promise<string | null> => {
-  return cachedAccessToken;
+  return getStoredToken();
 };
 
 export const getCurrentUser = (): User | null => {
@@ -79,27 +207,59 @@ export const getCurrentUser = (): User | null => {
 };
 
 export const isWorkspaceConnected = (): boolean => {
-  return !!cachedAccessToken;
+  return !!getStoredToken();
 };
 
 export const logout = async () => {
-  await signOut(auth);
-  cachedAccessToken = null;
+  try {
+    await signOut(auth);
+  } catch {}
+  setManualAccessToken('');
   currentUser = null;
 };
 
 /**
- * Helper to ensure headers with Bearer token
+ * Helper to perform Google API fetch with automatic 401 token expiration handling
  */
-async function getAuthHeaders(): Promise<Record<string, string>> {
-  const token = await getAccessToken();
+export async function fetchWithGoogleAuth(url: string, init: RequestInit = {}): Promise<Response> {
+  let token = await getAccessToken();
   if (!token) {
-    throw new Error('Google hisobi ulanmagan. Iltimos, Google bilan kiring.');
+    throw new Error('Google hisobi ulanmagan. Iltimos, «Google bilan ulash» yoki «Token kiritish» orqali ulaning.');
   }
-  return {
-    Authorization: `Bearer ${token}`,
-    'Content-Type': 'application/json'
+
+  const makeHeaders = (tok: string) => {
+    const h = new Headers(init.headers || {});
+    h.set('Authorization', `Bearer ${tok}`);
+    return h;
   };
+
+  let res = await fetch(url, { ...init, headers: makeHeaders(token) });
+
+  if (res.status === 401) {
+    console.warn('Google Access Token muddati tugagan (401). Yangilashga harakat qilinmoqda...');
+
+    // Try silent auto-refresh via Google Identity Services if client is available
+    try {
+      const refreshed = await signInWithGoogleIdentityServices();
+      if (refreshed?.accessToken) {
+        token = refreshed.accessToken;
+        res = await fetch(url, { ...init, headers: makeHeaders(token) });
+        if (res.ok) return res;
+      }
+    } catch {
+      // GIS auto prompt failed or popup was blocked
+    }
+
+    if (res.status === 401) {
+      // Clear expired token so app asks for a fresh one cleanly
+      setManualAccessToken('');
+      throw new Error(
+        'Google hisobi tokenining amal qilish muddati tugagan (Google Access Token 1 soat amal qiladi). Iltimos, yuqoridagi ko‘k paneldagi «Google bilan ulash» yoki yangi «Token kiritish» tugmasi orqali qayta ulaning.'
+      );
+    }
+  }
+
+  return res;
 }
 
 /**
@@ -107,15 +267,11 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
  */
 export async function getOrCreateDriveFolder(folderName: string = 'UBS_Arizalar_2026'): Promise<string> {
   const cachedFolderId = localStorage.getItem(DRIVE_FOLDER_ID_KEY);
-  const token = await getAccessToken();
-  if (!token) throw new Error('Google hisobi ulanmagan');
 
   // Verify cached folder still exists
   if (cachedFolderId) {
     try {
-      const checkRes = await fetch(`https://www.googleapis.com/drive/v3/files/${cachedFolderId}?fields=id,name,trashed`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const checkRes = await fetchWithGoogleAuth(`https://www.googleapis.com/drive/v3/files/${cachedFolderId}?fields=id,name,trashed`);
       if (checkRes.ok) {
         const folderData = await checkRes.json();
         if (!folderData.trashed) {
@@ -130,9 +286,7 @@ export async function getOrCreateDriveFolder(folderName: string = 'UBS_Arizalar_
   // Search existing folder by name
   try {
     const q = encodeURIComponent(`mimeType='application/vnd.google-apps.folder' and name='${folderName}' and trashed=false`);
-    const searchRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
+    const searchRes = await fetchWithGoogleAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`);
     if (searchRes.ok) {
       const searchData = await searchRes.json();
       if (searchData.files && searchData.files.length > 0) {
@@ -146,10 +300,9 @@ export async function getOrCreateDriveFolder(folderName: string = 'UBS_Arizalar_
   }
 
   // Create folder
-  const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+  const createRes = await fetchWithGoogleAuth('https://www.googleapis.com/drive/v3/files', {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
@@ -192,9 +345,6 @@ export async function uploadPdfToDrive(
   pdfDataUrl: string,
   folderId?: string
 ): Promise<{ driveFileId: string; webViewLink: string; webContentLink?: string }> {
-  const token = await getAccessToken();
-  if (!token) throw new Error('Google hisobi ulanmagan');
-
   const targetFolderId = folderId || await getOrCreateDriveFolder();
   const blob = dataUrlToBlob(pdfDataUrl);
 
@@ -208,11 +358,8 @@ export async function uploadPdfToDrive(
   form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
   form.append('file', blob);
 
-  const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink,webContentLink', {
+  const res = await fetchWithGoogleAuth('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink,webContentLink', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`
-    },
     body: form
   });
 
@@ -225,10 +372,9 @@ export async function uploadPdfToDrive(
 
   // Try to make file viewable with link
   try {
-    await fetch(`https://www.googleapis.com/drive/v3/files/${uploaded.id}/permissions`, {
+    await fetchWithGoogleAuth(`https://www.googleapis.com/drive/v3/files/${uploaded.id}/permissions`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
@@ -276,15 +422,11 @@ export async function getOrCreateSpreadsheet(
   title: string = 'UBS_Friends_Family_Arizalar_2026'
 ): Promise<string> {
   const cachedId = localStorage.getItem(SPREADSHEET_ID_KEY);
-  const token = await getAccessToken();
-  if (!token) throw new Error('Google hisobi ulanmagan');
 
   // Verify cached spreadsheet
   if (cachedId) {
     try {
-      const checkRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${cachedId}?fields=spreadsheetId,properties.title`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const checkRes = await fetchWithGoogleAuth(`https://sheets.googleapis.com/v4/spreadsheets/${cachedId}?fields=spreadsheetId,properties.title`);
       if (checkRes.ok) {
         return cachedId;
       }
@@ -296,9 +438,7 @@ export async function getOrCreateSpreadsheet(
   // Search spreadsheet on Drive
   try {
     const q = encodeURIComponent(`mimeType='application/vnd.google-apps.spreadsheet' and name='${title}' and trashed=false`);
-    const searchRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
+    const searchRes = await fetchWithGoogleAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`);
     if (searchRes.ok) {
       const searchData = await searchRes.json();
       if (searchData.files && searchData.files.length > 0) {
@@ -313,10 +453,9 @@ export async function getOrCreateSpreadsheet(
 
   // Create new Spreadsheet
   const folderId = await getOrCreateDriveFolder();
-  const createRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
+  const createRes = await fetchWithGoogleAuth('https://sheets.googleapis.com/v4/spreadsheets', {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
@@ -347,25 +486,25 @@ export async function getOrCreateSpreadsheet(
 
   // Move spreadsheet file to folder
   try {
-    await fetch(`https://www.googleapis.com/drive/v3/files/${newSheetId}?addParents=${folderId}&fields=id,parents`, {
-      method: 'PATCH',
-      headers: { Authorization: `Bearer ${token}` }
+    await fetchWithGoogleAuth(`https://www.googleapis.com/drive/v3/files/${newSheetId}?addParents=${folderId}&fields=id,parents`, {
+      method: 'PATCH'
     });
   } catch {
     // optional move
   }
 
   // Set Header Row styling and values
-  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${newSheetId}/values/Arizalar!A1:S1?valueInputOption=USER_ENTERED`, {
-    method: 'PUT',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      values: [SHEETS_HEADER]
-    })
-  });
+  try {
+    await fetchWithGoogleAuth(`https://sheets.googleapis.com/v4/spreadsheets/${newSheetId}/values/Arizalar!A1:S1?valueInputOption=USER_ENTERED`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        values: [SHEETS_HEADER]
+      })
+    });
+  } catch {}
 
   return newSheetId;
 }
@@ -484,18 +623,14 @@ function applicationToRow(app: AnyApplication): string[] {
  * 4. GOOGLE SHEETS: Append new Application row
  */
 export async function appendApplicationToGoogleSheets(appData: AnyApplication): Promise<void> {
-  const token = await getAccessToken();
-  if (!token) throw new Error('Google hisobi ulanmagan');
-
   const spreadsheetId = await getOrCreateSpreadsheet();
   const rowValues = applicationToRow(appData);
 
-  const res = await fetch(
+  const res = await fetchWithGoogleAuth(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Arizalar!A:S:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
     {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
@@ -518,16 +653,12 @@ export async function updateApplicationStatusInGoogleSheets(
   newStatus: ApplicationStatus,
   adminNotes?: string
 ): Promise<boolean> {
-  const token = await getAccessToken();
-  if (!token) return false;
-
   try {
     const spreadsheetId = await getOrCreateSpreadsheet();
     
     // Read all IDs from column A
-    const res = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Arizalar!A:A`,
-      { headers: { Authorization: `Bearer ${token}` } }
+    const res = await fetchWithGoogleAuth(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Arizalar!A:A`
     );
     if (!res.ok) return false;
 
@@ -545,12 +676,11 @@ export async function updateApplicationStatusInGoogleSheets(
     if (rowIndex === -1) return false;
 
     // Column R is Status (18th col), Column S is AdminNotes (19th col)
-    const updateRes = await fetch(
+    const updateRes = await fetchWithGoogleAuth(
       `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Arizalar!R${rowIndex}:S${rowIndex}?valueInputOption=USER_ENTERED`,
       {
         method: 'PUT',
         headers: {
-          Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({

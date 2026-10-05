@@ -1,6 +1,7 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { 
+  initializeFirestore,
   getFirestore, 
   collection, 
   doc, 
@@ -8,9 +9,6 @@ import {
   updateDoc, 
   onSnapshot, 
   getDocFromServer,
-  query,
-  orderBy,
-  getDocs,
   enableNetwork
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
@@ -24,7 +22,18 @@ export const DEFAULT_ADMIN_CREDENTIALS: AdminCredentials = {
 // Initialize Firebase App
 export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
+
+// Initialize Firestore with robust auto-detect long-polling to prevent 10s backend connection timeouts
+export const db = (() => {
+  try {
+    return initializeFirestore(app, {
+      experimentalAutoDetectLongPolling: true,
+      ignoreUndefinedProperties: true
+    }, (firebaseConfig as any).firestoreDatabaseId);
+  } catch {
+    return getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
+  }
+})();
 
 // Error Handling conforming to Firebase Skill Guidelines
 export enum OperationType {
@@ -58,7 +67,9 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   const isQuotaOrOffline = errMsg.includes('Quota limit exceeded') || 
                            errMsg.includes('quota') || 
                            errMsg.includes('the client is offline') ||
-                           errMsg.includes('resource-exhausted');
+                           errMsg.includes('resource-exhausted') ||
+                           errMsg.includes('Could not reach Cloud Firestore') ||
+                           errMsg.includes('Backend didn\'t respond');
 
   // If it's a quota or offline issue, gracefully warn without throwing unhandled exceptions
   if (isQuotaOrOffline) {
@@ -86,22 +97,24 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
-// Test initial connection as mandated by skill
+// Test initial connection with timeout to fail fast if offline
 export async function testConnection(): Promise<boolean> {
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
+    const checkPromise = getDocFromServer(doc(db, 'test', 'connection'));
+    const timeoutPromise = new Promise<never>((_, reject) => 
+      setTimeout(() => reject(new Error('Connection check timeout')), 2500)
+    );
+    await Promise.race([checkPromise, timeoutPromise]);
     return true;
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
-    if (errMsg.includes('the client is offline') || errMsg.includes('Quota limit exceeded')) {
-      console.warn('Firebase mijoz oflayn yoki kvota holatda:', errMsg);
+    if (errMsg.includes('the client is offline') || errMsg.includes('Quota limit exceeded') || errMsg.includes('timeout')) {
+      console.warn('Firebase mijoz oflayn yoki serverga ulanish kutilyapti:', errMsg);
       return false;
     }
-    // If rules allow or document not found, the server is reached successfully
     return true;
   }
 }
-testConnection().catch(() => {});
 
 /**
  * Force reconnect to Firestore cloud network
@@ -147,7 +160,7 @@ export function subscribeApplications(
     },
     (error) => {
       const errMsg = error.message || '';
-      const isQuotaOrOffline = errMsg.includes('Quota limit exceeded') || errMsg.includes('quota') || errMsg.includes('resource-exhausted') || errMsg.includes('offline');
+      const isQuotaOrOffline = errMsg.includes('Quota limit exceeded') || errMsg.includes('quota') || errMsg.includes('resource-exhausted') || errMsg.includes('offline') || errMsg.includes('Backend didn\'t respond');
       if (!isQuotaOrOffline) {
         console.error('Error listening to applications collection:', error);
       } else {
@@ -219,7 +232,7 @@ export function subscribeContractSettings(
     },
     (error) => {
       const errMsg = error.message || '';
-      const isQuotaOrOffline = errMsg.includes('Quota limit exceeded') || errMsg.includes('quota') || errMsg.includes('resource-exhausted') || errMsg.includes('offline');
+      const isQuotaOrOffline = errMsg.includes('Quota limit exceeded') || errMsg.includes('quota') || errMsg.includes('resource-exhausted') || errMsg.includes('offline') || errMsg.includes('Backend didn\'t respond');
       if (!isQuotaOrOffline) {
         console.error('Error listening to contract settings:', error);
       } else {
@@ -272,7 +285,7 @@ export function subscribeAdminCredentials(
     },
     (error) => {
       const errMsg = error.message || '';
-      const isQuotaOrOffline = errMsg.includes('Quota limit exceeded') || errMsg.includes('quota') || errMsg.includes('resource-exhausted') || errMsg.includes('offline');
+      const isQuotaOrOffline = errMsg.includes('Quota limit exceeded') || errMsg.includes('quota') || errMsg.includes('resource-exhausted') || errMsg.includes('offline') || errMsg.includes('Backend didn\'t respond');
       if (!isQuotaOrOffline) {
         console.error('Error listening to admin credentials:', error);
       } else {

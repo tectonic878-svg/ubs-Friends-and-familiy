@@ -2,7 +2,7 @@ import React, { useRef, useState } from 'react';
 import { UploadCloud, CheckCircle2, Trash2, Eye, Sparkles, FileText, Download, AlertCircle } from 'lucide-react';
 import { DocumentFile } from '../types';
 import { readFileAsDataUrl, downloadFile } from '../utils/formatters';
-import { createSampleDocSvg } from '../data/mockData';
+import { createAuthenticPdfDataUrl } from '../utils/pdfGenerator';
 
 interface FileUploadFieldProps {
   id: string;
@@ -82,15 +82,26 @@ export const FileUploadField: React.FC<FileUploadFieldProps> = ({
     setFormatError(null);
     const finalName = desiredFileName || `${sampleTitle.replace(/\s+/g, '_')}.pdf`;
     
-    // Create both valid PDF stream data and visual SVG representation
+    // Create authentic, valid %PDF-1.4 binary data URL
+    const authenticPdfUrl = createAuthenticPdfDataUrl({
+      title: sampleTitle.toUpperCase() + ' HUJJATI',
+      subTitle: sampleSub || 'UBS Tasdiqlangan Hujjat Nusxasi',
+      studentName: 'Aliyev Bekzod Jamshidovich',
+      jshshr: sampleJshshr || (desiredFileName ? desiredFileName.replace(/\.pdf$/i, '') : '31405021234567'),
+      phone: desiredFileName && desiredFileName.startsWith('998') ? desiredFileName.replace(/\.pdf$/i, '') : '+998 90 123 45 67',
+      faculty: 'Ijtimoiy fanlar va raqamli texnologiyalar',
+      course: '1-kurs',
+      docType: sampleTitle.toLowerCase().includes('diplom') || sampleTitle.toLowerCase().includes('shaxodatnoma') ? 'certificate' : 'passport'
+    });
+
     const sampleDoc: DocumentFile = {
       id: 'sample_' + Math.random().toString(36).substring(2, 9),
       name: finalName,
       type: 'pdf',
-      size: '0.8 MB',
+      size: '0.05 MB',
+      dataUrl: authenticPdfUrl,
       uploadedAt: new Date().toISOString(),
-      // Use SVG preview for visual rendering in browser, with embedded sample metadata
-      url: createSampleDocSvg(sampleTitle.toUpperCase() + ' (PDF)', sampleSub, '#0284c7')
+      url: authenticPdfUrl
     };
     onChange(sampleDoc);
   };

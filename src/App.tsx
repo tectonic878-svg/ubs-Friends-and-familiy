@@ -174,27 +174,9 @@ export default function App() {
           setApplications((prev) => {
             const merged = mergeLocalDocumentUrls(firestoreApps, prev);
             // Backup to local server
-            bulkImportApplicationsToServer(merged);
+            bulkImportApplicationsToServer(merged).catch(() => {});
             return merged;
           });
-        } else {
-          // If Firestore is brand new and has 0 apps, check if we have local/server apps to seed
-          const cached = localStorage.getItem('unigrant_applications');
-          if (cached) {
-            try {
-              const parsed: AnyApplication[] = JSON.parse(cached);
-              if (parsed.length > 0) {
-                parsed.forEach((appItem) => {
-                  const optimized = optimizeApplicationForCloud(appItem);
-                  saveApplicationToFirestore(optimized).catch(() => {});
-                });
-                bulkImportApplicationsToServer(parsed);
-                setApplications(parsed);
-              }
-            } catch {
-              // ignore
-            }
-          }
         }
       },
       (err) => {
@@ -228,21 +210,25 @@ export default function App() {
       (err) => console.warn('Firestore admin creds listener:', err.message)
     );
 
-    // 4. Background polling from independent server DB as secondary sync
+    // 4. Background polling from independent server DB (Real-time live multi-device sync)
     const unsubscribeServer = subscribeServerData(
       (serverApps) => {
-        if (!isMounted) return;
-        if (serverApps.length > 0) {
-          setApplications((prev) => {
-            // Only update if server has apps and firestore is empty or offline
-            if (prev.length === 0) return serverApps;
-            return prev;
+        if (!isMounted || !serverApps || serverApps.length === 0) return;
+        setApplications((prev) => {
+          const map = new Map<string, AnyApplication>();
+          prev.forEach((a) => map.set(a.id, a));
+          serverApps.forEach((sa) => {
+            const existing = map.get(sa.id);
+            map.set(sa.id, existing ? { ...existing, ...sa } : sa);
           });
-        }
+          const list = Array.from(map.values());
+          list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          return list;
+        });
       },
       () => {},
       () => {},
-      10000 // gentle 10s interval
+      2000 // Responsive 2s polling across all devices
     );
 
     // Online / Offline browser event listeners

@@ -945,6 +945,20 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
             <span className="hidden sm:inline">Excel</span>
           </button>
+
+          {/* Quick manual refresh button */}
+          {onReconnectCloud && (
+            <button
+              onClick={onReconnectCloud}
+              disabled={isReconnecting}
+              type="button"
+              className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer shrink-0"
+              title="Arizalar ro'yxatini darhol yangilash"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-blue-600 ${isReconnecting ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">Yangilash</span>
+            </button>
+          )}
         </div>
       </div>
 

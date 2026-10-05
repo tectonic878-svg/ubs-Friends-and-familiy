@@ -168,7 +168,7 @@ export function subscribeServerData(
   onAppsUpdate: (apps: AnyApplication[]) => void,
   onSettingsUpdate: (settings: ContractSettings) => void,
   onCredsUpdate: (creds: AdminCredentials) => void,
-  intervalMs = 4000
+  intervalMs = 2000
 ): () => void {
   let isMounted = true;
 

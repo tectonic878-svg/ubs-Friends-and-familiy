@@ -8,6 +8,7 @@ export interface DocumentFile {
   url: string;
   uploadedAt: string;
   size?: string;
+  dataUrl?: string;
   driveFileId?: string;
   driveWebViewLink?: string;
   driveDownloadLink?: string;
