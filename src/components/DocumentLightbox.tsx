@@ -2,6 +2,7 @@ import React from 'react';
 import { X, ZoomIn, ZoomOut, Download, FileText, ExternalLink } from 'lucide-react';
 import { DocumentFile } from '../types';
 import { downloadFile, getDocumentBlobUrl } from '../utils/formatters';
+import { getDocFromVault } from '../utils/indexedDbVault';
 
 interface DocumentLightboxProps {
   document: DocumentFile | null;
@@ -10,10 +11,38 @@ interface DocumentLightboxProps {
 
 export const DocumentLightbox: React.FC<DocumentLightboxProps> = ({ document: doc, onClose }) => {
   const [scale, setScale] = React.useState(1);
+  const [activeUrl, setActiveUrl] = React.useState<string>('');
+
+  React.useEffect(() => {
+    let active = true;
+    if (!doc) {
+      setActiveUrl('');
+      return;
+    }
+
+    if (doc.dataUrl && doc.dataUrl.startsWith('data:')) {
+      setActiveUrl(doc.dataUrl);
+      return;
+    }
+    if (doc.url && doc.url.startsWith('data:')) {
+      setActiveUrl(doc.url);
+      return;
+    }
+
+    getDocFromVault(doc.id || doc.name).then((v) => {
+      if (active && v && (v.dataUrl || v.url)) {
+        setActiveUrl(v.dataUrl || v.url);
+      } else if (active) {
+        setActiveUrl(doc.url || '');
+      }
+    });
+
+    return () => { active = false; };
+  }, [doc]);
 
   if (!doc) return null;
 
-  const docUrl = doc.dataUrl || doc.url;
+  const docUrl = activeUrl || doc.dataUrl || doc.url;
   const isImage = doc.type === 'image' || docUrl.startsWith('data:image/');
   const isPdf = doc.type === 'pdf' || doc.name.toLowerCase().endsWith('.pdf') || docUrl.includes('application/pdf');
 

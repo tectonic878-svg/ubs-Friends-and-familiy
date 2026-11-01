@@ -6,6 +6,7 @@ import {
   XCircle, 
   Clock, 
   Eye, 
+  EyeOff,
   Lock, 
   FileText, 
   Printer, 
@@ -31,7 +32,9 @@ import {
   HeartHandshake,
   RefreshCw,
   HardDriveDownload,
-  HardDriveUpload
+  HardDriveUpload,
+  Trash2,
+  AlertTriangle
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { 
@@ -45,6 +48,7 @@ import {
 } from '../types';
 import { downloadFile, cleanPhoneDigits } from '../utils/formatters';
 import { downloadAllApplicationsAsZip } from '../utils/zipUtils';
+import { clearAllApplicationsOnServer } from '../services/serverDb';
 import { UBSLogo } from './UBSLogo';
 import { 
   saveVideoFile, 
@@ -71,6 +75,8 @@ interface AdminPortalProps {
   onUpdateAdminCredentials?: (credentials: AdminCredentials) => void;
   onImportBackup?: (apps: AnyApplication[]) => Promise<void> | void;
   onSyncToGoogle?: () => Promise<void>;
+  onClearAllApplications?: () => Promise<void> | void;
+  onRestoreFromSupabase?: () => Promise<{ success: boolean; count?: number; total?: number; error?: string }>;
 }
 
 export const AdminPortal: React.FC<AdminPortalProps> = ({
@@ -88,11 +94,20 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   onUpdateAdminCredentials,
   onImportBackup,
   onSyncToGoogle,
+  onClearAllApplications,
+  onRestoreFromSupabase,
 }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(true);
   const [adminUsername, setAdminUsername] = useState('ubs_admin');
   const [adminPassword, setAdminPassword] = useState('error404');
-  const [loginError, setLoginError] = useState('false');
+  const [showFallbackPassword, setShowFallbackPassword] = useState(false);
+  const [loginError, setLoginError] = useState('');
+
+  // Clear / Reset Database Modal State
+  const [isClearDbModalOpen, setIsClearDbModalOpen] = useState(false);
+  const [clearConfirmText, setClearConfirmText] = useState('');
+  const [isClearingDb, setIsClearingDb] = useState(false);
+  const [isRestoringSupabase, setIsRestoringSupabase] = useState(false);
 
   // Filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -116,7 +131,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [isChangePasswordModalOpen, setIsChangePasswordModalOpen] = useState(false);
   const [newAdminUsername, setNewAdminUsername] = useState(adminCredentials?.username || 'admin');
   const [currentAdminPassword, setCurrentAdminPassword] = useState('');
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
   const [newAdminPassword, setNewAdminPassword] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
   const [confirmAdminPassword, setConfirmAdminPassword] = useState('');
   const [passwordChangeError, setPasswordChangeError] = useState('');
   const [passwordChangeSuccess, setPasswordChangeSuccess] = useState('');
@@ -426,55 +443,105 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     showToast('Ariza rad etildi.');
   };
 
-  // Filtered applications
+  const handleConfirmClearDatabase = async () => {
+    setIsClearingDb(true);
+    try {
+      if (onClearAllApplications) {
+        await onClearAllApplications();
+      } else {
+        await clearAllApplicationsOnServer();
+      }
+      showToast('✅ Baza to‘liq tozalandi! Barcha arizalar va fayllar 0 holatiga qaytarildi.');
+      setIsClearDbModalOpen(false);
+      setClearConfirmText('');
+    } catch (err: any) {
+      showToast('⚠️ Bazani tozalashda xatolik yuz berdi: ' + (err?.message || 'Server xatosi'));
+    } finally {
+      setIsClearingDb(false);
+    }
+  };
+
+  const handleRestoreFromSupabase = async () => {
+    if (!onRestoreFromSupabase) return;
+    setIsRestoringSupabase(true);
+    showToast('Supabase bazasidan arizalar yuklab olinmoqda...');
+    try {
+      const result = await onRestoreFromSupabase();
+      if (result.success) {
+        showToast(`✅ Muvaffaqiyatli! ${result.count} ta ariza tiklandi. Jami: ${result.total} ta.`);
+      } else {
+        showToast('⚠️ Xatolik: ' + (result.error || 'Noma’lum xato'));
+      }
+    } catch (err: any) {
+      showToast('⚠️ Tiklashda xatolik yuz berdi: ' + (err?.message || 'Server xatosi'));
+    } finally {
+      setIsRestoringSupabase(false);
+    }
+  };
+
+  // Filtered applications (100% crash-proof and defensive against missing/partial student data)
   const filteredApps = applications.filter((app) => {
+    if (!app || !app.id) return false;
     if (selectedType !== 'all' && app.type !== selectedType) return false;
     if (selectedStatus !== 'all' && app.status !== selectedStatus) return false;
     if (!searchQuery.trim()) return true;
 
-    const q = searchQuery.toLowerCase();
+    const q = searchQuery.toLowerCase().trim();
     if (app.id.toLowerCase().includes(q)) return true;
 
     if (app.type === 'friends') {
       const allS = [
         app.applicantStudent,
-        ...(app.friendsList && app.friendsList.length > 0 ? app.friendsList : [app.friendStudent])
-      ];
+        ...(Array.isArray(app.friendsList) ? app.friendsList : app.friendStudent ? [app.friendStudent] : [])
+      ].filter(Boolean);
+
       return allS.some(
         (s) =>
-          s.fullName.toLowerCase().includes(q) ||
-          s.jshshr.includes(q) ||
-          s.passportNumber.includes(q) ||
-          (s.phone1 && s.phone1.includes(q)) ||
-          (s.phone2 && s.phone2.includes(q))
+          (s?.fullName && s.fullName.toLowerCase().includes(q)) ||
+          (s?.jshshr && s.jshshr.includes(q)) ||
+          (s?.passportSeria && s.passportSeria.toLowerCase().includes(q)) ||
+          (s?.passportNumber && s.passportNumber.includes(q)) ||
+          (s?.phone1 && s.phone1.includes(q)) ||
+          (s?.phone2 && s.phone2.includes(q)) ||
+          (s?.phone && s.phone.includes(q)) ||
+          (s?.faculty && s.faculty.toLowerCase().includes(q)) ||
+          (s?.course && s.course.toLowerCase().includes(q))
       );
-    } else {
-      return app.members.some(
+    } else if (app.type === 'family') {
+      const members = Array.isArray(app.members) ? app.members.filter(Boolean) : [];
+      return members.some(
         (m) =>
-          m.fullName.toLowerCase().includes(q) ||
-          m.jshshr.includes(q) ||
-          m.passportNumber.includes(q) ||
-          (m.phone1 && m.phone1.includes(q)) ||
-          (m.phone2 && m.phone2.includes(q))
+          (m?.fullName && m.fullName.toLowerCase().includes(q)) ||
+          (m?.jshshr && m.jshshr.includes(q)) ||
+          (m?.passportSeria && m.passportSeria.toLowerCase().includes(q)) ||
+          (m?.passportNumber && m.passportNumber.includes(q)) ||
+          (m?.phone1 && m.phone1.includes(q)) ||
+          (m?.phone2 && m.phone2.includes(q)) ||
+          (m?.phone && m.phone.includes(q)) ||
+          (m?.faculty && m.faculty.toLowerCase().includes(q)) ||
+          (m?.course && m.course.toLowerCase().includes(q)) ||
+          (m?.relationship && m.relationship.toLowerCase().includes(q))
       );
     }
+    return false;
   });
 
   // Calculate statistics purely focused on applications & students (NO money amounts)
   const totalCount = applications.length;
-  const pendingCount = applications.filter((a) => a.status === 'kutilmoqda').length;
-  const approvedCount = applications.filter((a) => a.status === 'tasdiqlandi').length;
-  const rejectedCount = applications.filter((a) => a.status === 'rad_etildi').length;
-  const friendsAppsCount = applications.filter((a) => a.type === 'friends').length;
-  const familyAppsCount = applications.filter((a) => a.type === 'family').length;
+  const pendingCount = applications.filter((a) => a && a.status === 'kutilmoqda').length;
+  const approvedCount = applications.filter((a) => a && a.status === 'tasdiqlandi').length;
+  const rejectedCount = applications.filter((a) => a && a.status === 'rad_etildi').length;
+  const friendsAppsCount = applications.filter((a) => a && a.type === 'friends').length;
+  const familyAppsCount = applications.filter((a) => a && a.type === 'family').length;
 
   // Total students covered
   const totalStudentsCount = applications.reduce((acc, app) => {
+    if (!app) return acc;
     if (app.type === 'friends') {
-      const count = (app.friendsList && app.friendsList.length > 0 ? app.friendsList.length : 1) + 1;
-      return acc + count;
+      const friendsCount = Array.isArray(app.friendsList) ? app.friendsList.length : app.friendStudent ? 1 : 0;
+      return acc + (app.applicantStudent ? 1 : 0) + friendsCount;
     } else {
-      return acc + (app.members?.length || app.membersCount || 0);
+      return acc + (Array.isArray(app.members) ? app.members.length : (app.membersCount || 0));
     }
   }, 0);
 
@@ -489,61 +556,68 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     let counter = 1;
 
     applications.forEach((app) => {
+      if (!app) return;
       const appTypeLabel = app.type === 'friends' ? 'Friends (Do‘stlar)' : 'Family (Oila)';
       const appStatusLabel = 
         app.status === 'tasdiqlandi' ? 'Tasdiqlangan' : 
         app.status === 'rad_etildi' ? 'Rad etilgan' : 'Kutilmoqda';
-      const createdDate = new Date(app.createdAt).toLocaleString('uz-UZ');
+      const createdDate = app.createdAt ? new Date(app.createdAt).toLocaleString('uz-UZ') : '-';
 
       if (app.type === 'friends') {
-        const students: { s: StudentInfo; role: string }[] = [
-          { s: app.applicantStudent, role: '1-Talaba (Asosiy arizachi)' },
-          ...(app.friendsList && app.friendsList.length > 0 ? app.friendsList : [app.friendStudent]).map((fr, idx) => ({
-            s: fr,
-            role: `${idx + 2}-Talaba (${idx + 1}-Sherik/Do‘st)`
-          }))
-        ];
+        const rawFriends = Array.isArray(app.friendsList) && app.friendsList.length > 0 
+          ? app.friendsList 
+          : (app.friendStudent ? [app.friendStudent] : []);
+        const validFriends = rawFriends.filter(Boolean);
+
+        const students: { s: StudentInfo; role: string }[] = [];
+        if (app.applicantStudent) {
+          students.push({ s: app.applicantStudent, role: '1-Talaba (Asosiy arizachi)' });
+        }
+        validFriends.forEach((fr, idx) => {
+          students.push({ s: fr, role: `${idx + 2}-Talaba (${idx + 1}-Sherik/Do‘st)` });
+        });
 
         students.forEach(({ s, role }) => {
           const cleanPhone = cleanPhoneDigits(s.phone1 || s.phone || '');
           rows.push({
             '№': counter++,
-            'Ariza ID': app.id,
+            'Ariza ID': app.id || '',
             'Dastur turi': appTypeLabel,
-            'Talaba F.I.SH': s.fullName,
-            'JSHSHR (PINFL)': s.jshshr,
-            'Pasport seriyasi': s.passportSeria,
-            'Pasport raqami': s.passportNumber,
+            'Talaba F.I.SH': s.fullName || 'Noma’lum',
+            'JSHSHR (PINFL)': s.jshshr || '',
+            'Pasport seriyasi': s.passportSeria || '',
+            'Pasport raqami': s.passportNumber || '',
             '1-Telefon raqami (Asosiy)': s.phone1 || s.phone || 'Kiritilmagan',
             '2-Telefon raqami (Qo‘shimcha)': s.phone2 || 'Kiritilmagan',
-            'Fakultet / Yo‘nalish': s.faculty,
-            'Bosqich (Kurs)': s.course,
+            'Fakultet / Yo‘nalish': s.faculty || '',
+            'Bosqich (Kurs)': s.course || '',
             'Talaba roli': role,
             'Ariza holati': appStatusLabel,
             'Ariza sanasi': createdDate,
-            '1-Fayl nomi (JSHSHR)': `${s.jshshr}.pdf`,
+            '1-Fayl nomi (JSHSHR)': `${s.jshshr || 'passport'}.pdf`,
             '2-Fayl nomi (Telefon)': cleanPhone ? `${cleanPhone}.pdf` : 'telefon.pdf'
           });
         });
       } else if (app.type === 'family') {
-        app.members.forEach((m, idx) => {
+        const members = Array.isArray(app.members) ? app.members.filter(Boolean) : [];
+        members.forEach((m, idx) => {
           const cleanPhone = cleanPhoneDigits(m.phone1 || m.phone || '');
           rows.push({
             '№': counter++,
-            'Ariza ID': app.id,
+            'Ariza ID': app.id || '',
             'Dastur turi': appTypeLabel,
-            'Talaba F.I.SH': m.fullName,
-            'JSHSHR (PINFL)': m.jshshr,
-            'Pasport seriyasi': m.passportSeria,
-            'Pasport raqami': m.passportNumber,
+            'Talaba F.I.SH': m.fullName || 'Noma’lum',
+            'JSHSHR (PINFL)': m.jshshr || '',
+            'Pasport seriyasi': m.passportSeria || '',
+            'Pasport raqami': m.passportNumber || '',
             '1-Telefon raqami (Asosiy)': m.phone1 || m.phone || 'Kiritilmagan',
             '2-Telefon raqami (Qo‘shimcha)': m.phone2 || 'Kiritilmagan',
-            'Fakultet / Yo‘nalish': m.faculty,
-            'Bosqich (Kurs)': m.course,
-            'Talaba roli': `${idx + 1}-A’zo (${m.relationship})`,
+            'Fakultet / Yo‘nalish': m.faculty || '',
+            'Bosqich (Kurs)': m.course || '',
+            'Talaba roli': `${idx + 1}-A’zo (${m.relationship || 'Oila a’zosi'})`,
             'Ariza holati': appStatusLabel,
             'Ariza sanasi': createdDate,
-            '1-Fayl nomi (JSHSHR)': `${m.jshshr}.pdf`,
+            '1-Fayl nomi (JSHSHR)': `${m.jshshr || 'passport'}.pdf`,
             '2-Fayl nomi (Telefon)': cleanPhone ? `${cleanPhone}.pdf` : 'telefon.pdf'
           });
         });
@@ -584,24 +658,26 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   // INDIVIDUAL PDF DOWNLOAD HELPERS
   // 1-fayl: JSHSHR bo'yicha nomlanadi (masalan, 31405021234567.pdf)
   const downloadFirstPdf = (doc: DocumentFile | undefined, jshshr: string) => {
-    if (!doc?.url) {
+    const targetUrl = doc?.dataUrl || doc?.url;
+    if (!targetUrl) {
       showToast('1-fayl (Pasport PDF) hujjati mavjud emas.');
       return;
     }
     const filename = `${jshshr || 'hujjat_jshshr'}.pdf`;
-    downloadFile(doc.url, filename);
+    downloadFile(targetUrl, filename);
     showToast(`1-fayl yuklab olindi: ${filename}`);
   };
 
   // 2-fayl: Telefon raqamiga qarab nomlanadi (masalan, 998901234567.pdf)
   const downloadSecondPdf = (doc: DocumentFile | undefined, phone: string) => {
-    if (!doc?.url) {
+    const targetUrl = doc?.dataUrl || doc?.url;
+    if (!targetUrl) {
       showToast('2-fayl (Diplom/Guvohnoma PDF) hujjati mavjud emas.');
       return;
     }
     const clean = cleanPhoneDigits(phone);
     const filename = `${clean || 'hujjat_telefon'}.pdf`;
-    downloadFile(doc.url, filename);
+    downloadFile(targetUrl, filename);
     showToast(`2-fayl yuklab olindi: ${filename}`);
   };
 
@@ -612,26 +688,33 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     if (app.type === 'friends') {
       const students = [
         app.applicantStudent,
-        ...(app.friendsList && app.friendsList.length > 0 ? app.friendsList : [app.friendStudent])
-      ];
+        ...(Array.isArray(app.friendsList) ? app.friendsList : app.friendStudent ? [app.friendStudent] : [])
+      ].filter(Boolean);
 
       students.forEach((s) => {
-        if (s.passportDoc?.url) {
-          filesToDownload.push({ url: s.passportDoc.url, name: `${s.jshshr}.pdf` });
+        if (!s) return;
+        const passUrl = s.passportDoc?.dataUrl || s.passportDoc?.url;
+        if (passUrl) {
+          filesToDownload.push({ url: passUrl, name: `${s.jshshr || 'passport'}.pdf` });
         }
-        if (s.certificateDoc?.url) {
+        const certUrl = s.certificateDoc?.dataUrl || s.certificateDoc?.url;
+        if (certUrl) {
           const cleanPhone = cleanPhoneDigits(s.phone1 || s.phone || '');
-          filesToDownload.push({ url: s.certificateDoc.url, name: `${cleanPhone || s.jshshr + '_doc2'}.pdf` });
+          filesToDownload.push({ url: certUrl, name: `${cleanPhone || (s.jshshr ? s.jshshr + '_doc2' : 'hujjat2')}.pdf` });
         }
       });
     } else if (app.type === 'family') {
-      app.members.forEach((m) => {
-        if (m.passportDoc?.url) {
-          filesToDownload.push({ url: m.passportDoc.url, name: `${m.jshshr}.pdf` });
+      const members = Array.isArray(app.members) ? app.members.filter(Boolean) : [];
+      members.forEach((m) => {
+        if (!m) return;
+        const passUrl = m.passportDoc?.dataUrl || m.passportDoc?.url;
+        if (passUrl) {
+          filesToDownload.push({ url: passUrl, name: `${m.jshshr || 'passport'}.pdf` });
         }
-        if (m.birthOrMarriageDoc?.url) {
+        const birthUrl = m.birthOrMarriageDoc?.dataUrl || m.birthOrMarriageDoc?.url;
+        if (birthUrl) {
           const cleanPhone = cleanPhoneDigits(m.phone1 || m.phone || '');
-          filesToDownload.push({ url: m.birthOrMarriageDoc.url, name: `${cleanPhone || m.jshshr + '_doc2'}.pdf` });
+          filesToDownload.push({ url: birthUrl, name: `${cleanPhone || (m.jshshr ? m.jshshr + '_doc2' : 'hujjat2')}.pdf` });
         }
       });
     }
@@ -668,26 +751,71 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           </div>
         )}
 
+        <button
+          type="button"
+          onClick={() => {
+            setAdminUsername(adminCredentials?.username || 'admin');
+            setAdminPassword(adminCredentials?.password || 'admin123');
+            setLoginError('');
+          }}
+          className="w-full mb-3 py-2 px-3 bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer shadow-xs"
+        >
+          <KeyRound className="w-4 h-4 text-amber-600" />
+          <span>Login va Parolni avtomatik kiritish</span>
+        </button>
+
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">Login</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs font-semibold text-slate-700">Login</label>
+              <button
+                type="button"
+                onClick={() => setAdminUsername(adminCredentials?.username || 'admin')}
+                className="text-[11px] text-indigo-600 hover:text-indigo-800 font-semibold hover:underline cursor-pointer"
+              >
+                Avto kiritish
+              </button>
+            </div>
             <input
               type="text"
               value={adminUsername}
               onChange={(e) => setAdminUsername(e.target.value)}
-              className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-hidden"
+              className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-hidden font-mono"
               required
             />
           </div>
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">Parol</label>
-            <input
-              type="password"
-              value={adminPassword}
-              onChange={(e) => setAdminPassword(e.target.value)}
-              className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-hidden"
-              required
-            />
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs font-semibold text-slate-700">Parol</label>
+              <button
+                type="button"
+                onClick={() => setAdminPassword(adminCredentials?.password || 'admin123')}
+                className="text-[11px] text-indigo-600 hover:text-indigo-800 font-semibold hover:underline cursor-pointer"
+              >
+                Avto kiritish
+              </button>
+            </div>
+            <div className="relative">
+              <input
+                type={showFallbackPassword ? 'text' : 'password'}
+                value={adminPassword}
+                onChange={(e) => setAdminPassword(e.target.value)}
+                className="w-full pl-3 pr-10 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-hidden font-mono"
+                required
+              />
+              <button
+                type="button"
+                onClick={() => setShowFallbackPassword(!showFallbackPassword)}
+                className="absolute right-3 top-2 text-slate-400 hover:text-slate-600 transition cursor-pointer p-0.5 rounded"
+                title={showFallbackPassword ? "Parolni yashirish" : "Parolni ko‘rsatish"}
+              >
+                {showFallbackPassword ? (
+                  <EyeOff className="w-4 h-4 text-indigo-600" />
+                ) : (
+                  <Eye className="w-4 h-4" />
+                )}
+              </button>
+            </div>
           </div>
           <button
             type="submit"
@@ -807,6 +935,21 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               />
             </label>
 
+            {/* RESTORE FROM SUPABASE (Special request) */}
+            <button
+              onClick={handleRestoreFromSupabase}
+              disabled={isRestoringSupabase}
+              className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-800 disabled:text-slate-500 text-white rounded-xl text-xs font-bold transition shadow-md flex items-center gap-1.5 cursor-pointer border border-blue-500/40"
+              title="Supabase bulut bazasidan barcha 57+ arizalarni qayta tiklash (Zaxira)"
+            >
+              {isRestoringSupabase ? (
+                <Loader2 className="w-4 h-4 animate-spin text-blue-200" />
+              ) : (
+                <RefreshCw className="w-4 h-4 text-blue-200" />
+              )}
+              <span>Supabase'dan tiklash (57+)</span>
+            </button>
+
             {/* Change Admin Password Button (Accessible only from Admin Portal) */}
             <button
               onClick={handleOpenChangePasswordModal}
@@ -825,6 +968,19 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             >
               <VideoIcon className="w-3.5 h-3.5 text-blue-400" />
               <span>Video qo‘llanma yuklash</span>
+            </button>
+
+            {/* Clear Database Button (Reset to 0) */}
+            <button
+              onClick={() => {
+                setClearConfirmText('');
+                setIsClearDbModalOpen(true);
+              }}
+              className="px-3.5 py-2 bg-rose-700 hover:bg-rose-800 text-white rounded-xl text-xs font-bold transition border border-rose-500/50 flex items-center gap-1.5 cursor-pointer shadow-xs"
+              title="Bazani to‘liq tozalash (Barcha test arizalarni 0 holatiga o‘chirish)"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-200" />
+              <span>Bazani tozalash</span>
             </button>
 
             <button
@@ -1110,15 +1266,15 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         <div>
                           <div className="text-xs font-bold text-blue-700 mb-2 flex items-center justify-between pb-1.5 border-b border-slate-200">
                             <span>1-Talaba (Asosiy arizachi)</span>
-                            <span className="font-mono text-[11px] text-slate-500">{app.applicantStudent.course}</span>
+                            <span className="font-mono text-[11px] text-slate-500">{app.applicantStudent?.course || 'Bosqich ko‘rsatilmagan'}</span>
                           </div>
                           <div className="space-y-1.5 text-xs">
-                            <p><strong className="text-slate-700">F.I.SH:</strong> {app.applicantStudent.fullName}</p>
-                            <p><strong className="text-slate-700">JSHSHR:</strong> <span className="font-mono bg-white px-2 py-0.5 rounded border border-slate-200 font-bold">{app.applicantStudent.jshshr}</span></p>
-                            <p><strong className="text-slate-700">Pasport:</strong> <span className="font-mono font-bold text-slate-900">{app.applicantStudent.passportSeria} {app.applicantStudent.passportNumber}</span></p>
-                            <p><strong className="text-slate-700">1-Telefon:</strong> <span className="font-mono font-bold text-blue-800">{app.applicantStudent.phone1 || app.applicantStudent.phone || 'Kiritilmagan'}</span></p>
-                            <p><strong className="text-slate-700">2-Telefon:</strong> <span className="font-mono text-slate-700">{app.applicantStudent.phone2 || 'Kiritilmagan'}</span></p>
-                            <p><strong className="text-slate-700">Fakultet:</strong> <span className="text-slate-600 block truncate">{app.applicantStudent.faculty}</span></p>
+                            <p><strong className="text-slate-700">F.I.SH:</strong> {app.applicantStudent?.fullName || 'Noma’lum talaba'}</p>
+                            <p><strong className="text-slate-700">JSHSHR:</strong> <span className="font-mono bg-white px-2 py-0.5 rounded border border-slate-200 font-bold">{app.applicantStudent?.jshshr || '-'}</span></p>
+                            <p><strong className="text-slate-700">Pasport:</strong> <span className="font-mono font-bold text-slate-900">{app.applicantStudent?.passportSeria || ''} {app.applicantStudent?.passportNumber || ''}</span></p>
+                            <p><strong className="text-slate-700">1-Telefon:</strong> <span className="font-mono font-bold text-blue-800">{app.applicantStudent?.phone1 || app.applicantStudent?.phone || 'Kiritilmagan'}</span></p>
+                            <p><strong className="text-slate-700">2-Telefon:</strong> <span className="font-mono text-slate-700">{app.applicantStudent?.phone2 || 'Kiritilmagan'}</span></p>
+                            <p><strong className="text-slate-700">Fakultet:</strong> <span className="text-slate-600 block truncate">{app.applicantStudent?.faculty || 'Kiritilmagan'}</span></p>
                           </div>
                         </div>
 
@@ -1128,14 +1284,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200">
                             <div className="min-w-0">
                               <p className="text-[11px] font-bold text-slate-800 truncate">
-                                1-Fayl: <span className="font-mono text-blue-600">{app.applicantStudent.jshshr}.pdf</span>
+                                1-Fayl: <span className="font-mono text-blue-600">{app.applicantStudent?.jshshr || 'passport'}.pdf</span>
                               </p>
                               <p className="text-[10px] text-slate-400">Pasport nusxasi (PDF)</p>
                             </div>
                             <div className="flex items-center gap-1 shrink-0">
-                              {app.applicantStudent.passportDoc && (
+                              {app.applicantStudent?.passportDoc && (
                                 <button
-                                  onClick={() => onPreviewDoc(app.applicantStudent.passportDoc!)}
+                                  onClick={() => onPreviewDoc(app.applicantStudent!.passportDoc!)}
                                   className="p-1 text-slate-500 hover:text-blue-600 rounded hover:bg-slate-100 transition"
                                   title="Ko‘rish"
                                 >
@@ -1143,7 +1299,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                 </button>
                               )}
                               <button
-                                onClick={() => downloadFirstPdf(app.applicantStudent.passportDoc, app.applicantStudent.jshshr)}
+                                onClick={() => downloadFirstPdf(app.applicantStudent?.passportDoc, app.applicantStudent?.jshshr || '')}
                                 className="px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded text-[10px] font-bold transition flex items-center gap-1"
                                 title="1-faylni JSHSHR nomi bilan yuklab olish"
                               >
@@ -1157,14 +1313,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200">
                             <div className="min-w-0">
                               <p className="text-[11px] font-bold text-slate-800 truncate">
-                                2-Fayl: <span className="font-mono text-emerald-600">{cleanPhoneDigits(app.applicantStudent.phone1 || app.applicantStudent.phone || 'telefon')}.pdf</span>
+                                2-Fayl: <span className="font-mono text-emerald-600">{cleanPhoneDigits(app.applicantStudent?.phone1 || app.applicantStudent?.phone || 'telefon')}.pdf</span>
                               </p>
                               <p className="text-[10px] text-slate-400">Diplom / Shahodatnoma (PDF)</p>
                             </div>
                             <div className="flex items-center gap-1 shrink-0">
-                              {app.applicantStudent.certificateDoc && (
+                              {app.applicantStudent?.certificateDoc && (
                                 <button
-                                  onClick={() => onPreviewDoc(app.applicantStudent.certificateDoc!)}
+                                  onClick={() => onPreviewDoc(app.applicantStudent!.certificateDoc!)}
                                   className="p-1 text-slate-500 hover:text-blue-600 rounded hover:bg-slate-100 transition"
                                   title="Ko‘rish"
                                 >
@@ -1172,7 +1328,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                 </button>
                               )}
                               <button
-                                onClick={() => downloadSecondPdf(app.applicantStudent.certificateDoc, app.applicantStudent.phone1 || app.applicantStudent.phone || '')}
+                                onClick={() => downloadSecondPdf(app.applicantStudent?.certificateDoc, app.applicantStudent?.phone1 || app.applicantStudent?.phone || '')}
                                 className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded text-[10px] font-bold transition flex items-center gap-1"
                                 title="2-faylni telefon raqami nomi bilan yuklab olish"
                               >
@@ -1185,23 +1341,23 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       </div>
 
                       {/* Friends List (1 to 5 friends) */}
-                      {(app.friendsList && app.friendsList.length > 0 
+                      {(Array.isArray(app.friendsList) && app.friendsList.length > 0 
                         ? app.friendsList 
-                        : [app.friendStudent]
-                      ).map((friend, fIdx) => (
+                        : (app.friendStudent ? [app.friendStudent] : [])
+                      ).filter(Boolean).map((friend, fIdx) => (
                         <div key={fIdx} className="p-4 rounded-xl bg-slate-50/70 border border-slate-200 flex flex-col justify-between">
                           <div>
                             <div className="text-xs font-bold text-indigo-700 mb-2 flex items-center justify-between pb-1.5 border-b border-slate-200">
                               <span>{fIdx + 2}-Talaba ({fIdx + 1}-Sherik)</span>
-                              <span className="font-mono text-[11px] text-slate-500">{friend.course}</span>
+                              <span className="font-mono text-[11px] text-slate-500">{friend?.course || ''}</span>
                             </div>
                             <div className="space-y-1.5 text-xs">
-                              <p><strong className="text-slate-700">F.I.SH:</strong> {friend.fullName}</p>
-                              <p><strong className="text-slate-700">JSHSHR:</strong> <span className="font-mono bg-white px-2 py-0.5 rounded border border-slate-200 font-bold">{friend.jshshr}</span></p>
-                              <p><strong className="text-slate-700">Pasport:</strong> <span className="font-mono font-bold text-slate-900">{friend.passportSeria} {friend.passportNumber}</span></p>
-                              <p><strong className="text-slate-700">1-Telefon:</strong> <span className="font-mono font-bold text-indigo-800">{friend.phone1 || friend.phone || 'Kiritilmagan'}</span></p>
-                              <p><strong className="text-slate-700">2-Telefon:</strong> <span className="font-mono text-slate-700">{friend.phone2 || 'Kiritilmagan'}</span></p>
-                              <p><strong className="text-slate-700">Fakultet:</strong> <span className="text-slate-600 block truncate">{friend.faculty}</span></p>
+                              <p><strong className="text-slate-700">F.I.SH:</strong> {friend?.fullName || 'Noma’lum sherik'}</p>
+                              <p><strong className="text-slate-700">JSHSHR:</strong> <span className="font-mono bg-white px-2 py-0.5 rounded border border-slate-200 font-bold">{friend?.jshshr || '-'}</span></p>
+                              <p><strong className="text-slate-700">Pasport:</strong> <span className="font-mono font-bold text-slate-900">{friend?.passportSeria || ''} {friend?.passportNumber || ''}</span></p>
+                              <p><strong className="text-slate-700">1-Telefon:</strong> <span className="font-mono font-bold text-indigo-800">{friend?.phone1 || friend?.phone || 'Kiritilmagan'}</span></p>
+                              <p><strong className="text-slate-700">2-Telefon:</strong> <span className="font-mono text-slate-700">{friend?.phone2 || 'Kiritilmagan'}</span></p>
+                              <p><strong className="text-slate-700">Fakultet:</strong> <span className="text-slate-600 block truncate">{friend?.faculty || 'Kiritilmagan'}</span></p>
                             </div>
                           </div>
 
@@ -1211,12 +1367,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200">
                               <div className="min-w-0">
                                 <p className="text-[11px] font-bold text-slate-800 truncate">
-                                  1-Fayl: <span className="font-mono text-indigo-600">{friend.jshshr}.pdf</span>
+                                  1-Fayl: <span className="font-mono text-indigo-600">{friend?.jshshr || 'passport'}.pdf</span>
                                 </p>
                                 <p className="text-[10px] text-slate-400">Pasport nusxasi (PDF)</p>
                               </div>
                               <div className="flex items-center gap-1 shrink-0">
-                                {friend.passportDoc && (
+                                {friend?.passportDoc && (
                                   <button
                                     onClick={() => onPreviewDoc(friend.passportDoc!)}
                                     className="p-1 text-slate-500 hover:text-indigo-600 rounded hover:bg-slate-100 transition"
@@ -1226,7 +1382,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                   </button>
                                 )}
                                 <button
-                                  onClick={() => downloadFirstPdf(friend.passportDoc, friend.jshshr)}
+                                  onClick={() => downloadFirstPdf(friend?.passportDoc, friend?.jshshr || '')}
                                   className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded text-[10px] font-bold transition flex items-center gap-1"
                                   title="1-faylni JSHSHR nomi bilan yuklab olish"
                                 >
@@ -1240,12 +1396,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200">
                               <div className="min-w-0">
                                 <p className="text-[11px] font-bold text-slate-800 truncate">
-                                  2-Fayl: <span className="font-mono text-emerald-600">{cleanPhoneDigits(friend.phone1 || friend.phone || 'telefon')}.pdf</span>
+                                  2-Fayl: <span className="font-mono text-emerald-600">{cleanPhoneDigits(friend?.phone1 || friend?.phone || 'telefon')}.pdf</span>
                                 </p>
                                 <p className="text-[10px] text-slate-400">Diplom / Shahodatnoma (PDF)</p>
                               </div>
                               <div className="flex items-center gap-1 shrink-0">
-                                {friend.certificateDoc && (
+                                {friend?.certificateDoc && (
                                   <button
                                     onClick={() => onPreviewDoc(friend.certificateDoc!)}
                                     className="p-1 text-slate-500 hover:text-indigo-600 rounded hover:bg-slate-100 transition"
@@ -1255,7 +1411,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                   </button>
                                 )}
                                 <button
-                                  onClick={() => downloadSecondPdf(friend.certificateDoc, friend.phone1 || friend.phone || '')}
+                                  onClick={() => downloadSecondPdf(friend?.certificateDoc, friend?.phone1 || friend?.phone || '')}
                                   className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded text-[10px] font-bold transition flex items-center gap-1"
                                   title="2-faylni telefon raqami nomi bilan yuklab olish"
                                 >
@@ -1275,20 +1431,20 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 {app.type === 'family' && (
                   <div className="space-y-6">
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                      {app.members.map((member, mIdx) => (
-                        <div key={member.id} className="p-4 rounded-xl bg-slate-50/70 border border-slate-200 flex flex-col justify-between">
+                      {(Array.isArray(app.members) ? app.members : []).filter(Boolean).map((member, mIdx) => (
+                        <div key={member?.id || mIdx} className="p-4 rounded-xl bg-slate-50/70 border border-slate-200 flex flex-col justify-between">
                           <div>
                             <div className="text-xs font-bold text-emerald-800 mb-2 flex items-center justify-between pb-1.5 border-b border-slate-200">
-                              <span>{mIdx + 1}-A’zo: {member.relationship}</span>
-                              <span className="font-mono text-[11px] text-slate-500">{member.course}</span>
+                              <span>{mIdx + 1}-A’zo: {member?.relationship || 'Oila a’zosi'}</span>
+                              <span className="font-mono text-[11px] text-slate-500">{member?.course || ''}</span>
                             </div>
                             <div className="space-y-1.5 text-xs mb-3">
-                              <p><strong className="text-slate-700">F.I.SH:</strong> {member.fullName}</p>
-                              <p><strong className="text-slate-700">JSHSHR:</strong> <span className="font-mono bg-white px-1.5 py-0.5 rounded border border-slate-200 font-bold">{member.jshshr}</span></p>
-                              <p><strong className="text-slate-700">Pasport:</strong> <span className="font-mono font-bold text-slate-900">{member.passportSeria} {member.passportNumber}</span></p>
-                              <p><strong className="text-slate-700">1-Telefon:</strong> <span className="font-mono font-bold text-emerald-800">{member.phone1 || member.phone || 'Kiritilmagan'}</span></p>
-                              <p><strong className="text-slate-700">2-Telefon:</strong> <span className="font-mono text-slate-700">{member.phone2 || 'Kiritilmagan'}</span></p>
-                              <p><strong className="text-slate-700">Fakultet:</strong> <span className="truncate block text-slate-600">{member.faculty}</span></p>
+                              <p><strong className="text-slate-700">F.I.SH:</strong> {member?.fullName || 'Noma’lum a’zo'}</p>
+                              <p><strong className="text-slate-700">JSHSHR:</strong> <span className="font-mono bg-white px-1.5 py-0.5 rounded border border-slate-200 font-bold">{member?.jshshr || '-'}</span></p>
+                              <p><strong className="text-slate-700">Pasport:</strong> <span className="font-mono font-bold text-slate-900">{member?.passportSeria || ''} {member?.passportNumber || ''}</span></p>
+                              <p><strong className="text-slate-700">1-Telefon:</strong> <span className="font-mono font-bold text-emerald-800">{member?.phone1 || member?.phone || 'Kiritilmagan'}</span></p>
+                              <p><strong className="text-slate-700">2-Telefon:</strong> <span className="font-mono text-slate-700">{member?.phone2 || 'Kiritilmagan'}</span></p>
+                              <p><strong className="text-slate-700">Fakultet:</strong> <span className="truncate block text-slate-600">{member?.faculty || 'Kiritilmagan'}</span></p>
                             </div>
                           </div>
 
@@ -1298,12 +1454,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200">
                               <div className="min-w-0">
                                 <p className="text-[11px] font-bold text-slate-800 truncate">
-                                  1-Fayl: <span className="font-mono text-emerald-600">{member.jshshr}.pdf</span>
+                                  1-Fayl: <span className="font-mono text-emerald-600">{member?.jshshr || 'passport'}.pdf</span>
                                 </p>
                                 <p className="text-[10px] text-slate-400">Pasport nusxasi (PDF)</p>
                               </div>
                               <div className="flex items-center gap-1 shrink-0">
-                                {member.passportDoc && (
+                                {member?.passportDoc && (
                                   <button
                                     onClick={() => onPreviewDoc(member.passportDoc!)}
                                     className="p-1 text-slate-500 hover:text-emerald-600 rounded hover:bg-slate-100 transition"
@@ -1313,7 +1469,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                   </button>
                                 )}
                                 <button
-                                  onClick={() => downloadFirstPdf(member.passportDoc, member.jshshr)}
+                                  onClick={() => downloadFirstPdf(member?.passportDoc, member?.jshshr || '')}
                                   className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded text-[10px] font-bold transition flex items-center gap-1"
                                   title="1-faylni JSHSHR nomi bilan yuklab olish"
                                 >
@@ -1327,12 +1483,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200">
                               <div className="min-w-0">
                                 <p className="text-[11px] font-bold text-slate-800 truncate">
-                                  2-Fayl: <span className="font-mono text-teal-600">{cleanPhoneDigits(member.phone1 || member.phone || 'telefon')}.pdf</span>
+                                  2-Fayl: <span className="font-mono text-teal-600">{cleanPhoneDigits(member?.phone1 || member?.phone || 'telefon')}.pdf</span>
                                 </p>
                                 <p className="text-[10px] text-slate-400">Guvohnoma / Metrika (PDF)</p>
                               </div>
                               <div className="flex items-center gap-1 shrink-0">
-                                {member.birthOrMarriageDoc && (
+                                {member?.birthOrMarriageDoc && (
                                   <button
                                     onClick={() => onPreviewDoc(member.birthOrMarriageDoc!)}
                                     className="p-1 text-slate-500 hover:text-emerald-600 rounded hover:bg-slate-100 transition"
@@ -1342,7 +1498,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                   </button>
                                 )}
                                 <button
-                                  onClick={() => downloadSecondPdf(member.birthOrMarriageDoc, member.phone1 || member.phone || '')}
+                                  onClick={() => downloadSecondPdf(member?.birthOrMarriageDoc, member?.phone1 || member?.phone || '')}
                                   className="px-2 py-1 bg-teal-50 hover:bg-teal-100 text-teal-700 rounded text-[10px] font-bold transition flex items-center gap-1"
                                   title="2-faylni telefon raqami nomi bilan yuklab olish"
                                 >
@@ -1547,14 +1703,28 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Amaldagi (Joriy) Parol:
                 </label>
-                <input
-                  type="password"
-                  value={currentAdminPassword}
-                  onChange={(e) => setCurrentAdminPassword(e.target.value)}
-                  placeholder="Joriy parolni kiriting"
-                  required
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-hidden bg-slate-50 focus:bg-white transition"
-                />
+                <div className="relative">
+                  <input
+                    type={showCurrentPassword ? 'text' : 'password'}
+                    value={currentAdminPassword}
+                    onChange={(e) => setCurrentAdminPassword(e.target.value)}
+                    placeholder="Joriy parolni kiriting"
+                    required
+                    className="w-full pl-3 pr-10 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-hidden bg-slate-50 focus:bg-white transition"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCurrentPassword(!showCurrentPassword)}
+                    className="absolute right-3 top-2 text-slate-400 hover:text-slate-600 transition cursor-pointer p-0.5 rounded"
+                    title={showCurrentPassword ? "Parolni yashirish" : "Parolni ko‘rsatish"}
+                  >
+                    {showCurrentPassword ? (
+                      <EyeOff className="w-4 h-4 text-indigo-600" />
+                    ) : (
+                      <Eye className="w-4 h-4" />
+                    )}
+                  </button>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1562,28 +1732,44 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
                     Yangi Parol:
                   </label>
-                  <input
-                    type="password"
-                    value={newAdminPassword}
-                    onChange={(e) => setNewAdminPassword(e.target.value)}
-                    placeholder="Kamida 5 ta belgi"
-                    required
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-hidden bg-slate-50 focus:bg-white transition"
-                  />
+                  <div className="relative">
+                    <input
+                      type={showNewPassword ? 'text' : 'password'}
+                      value={newAdminPassword}
+                      onChange={(e) => setNewAdminPassword(e.target.value)}
+                      placeholder="Kamida 5 ta belgi"
+                      required
+                      className="w-full pl-3 pr-10 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-hidden bg-slate-50 focus:bg-white transition"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNewPassword(!showNewPassword)}
+                      className="absolute right-3 top-2 text-slate-400 hover:text-slate-600 transition cursor-pointer p-0.5 rounded"
+                      title={showNewPassword ? "Parolni yashirish" : "Parolni ko‘rsatish"}
+                    >
+                      {showNewPassword ? (
+                        <EyeOff className="w-4 h-4 text-indigo-600" />
+                      ) : (
+                        <Eye className="w-4 h-4" />
+                      )}
+                    </button>
+                  </div>
                 </div>
 
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
                     Parolni Tasdiqlash:
                   </label>
-                  <input
-                    type="password"
-                    value={confirmAdminPassword}
-                    onChange={(e) => setConfirmAdminPassword(e.target.value)}
-                    placeholder="Qayta kiriting"
-                    required
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-hidden bg-slate-50 focus:bg-white transition"
-                  />
+                  <div className="relative">
+                    <input
+                      type={showNewPassword ? 'text' : 'password'}
+                      value={confirmAdminPassword}
+                      onChange={(e) => setConfirmAdminPassword(e.target.value)}
+                      placeholder="Qayta kiriting"
+                      required
+                      className="w-full pl-3 pr-10 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-hidden bg-slate-50 focus:bg-white transition"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -1749,6 +1935,59 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   Standart ({activeVideoTab === 'friends' ? 'video_friends.mp4' : 'video_family.mp4'})
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clear / Reset Entire Database Confirmation Modal */}
+      {isClearDbModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 sm:p-7 shadow-2xl border border-rose-200">
+            <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto mb-4">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+            <h3 className="text-lg font-bold text-center text-slate-900 mb-2">
+              Bazani to‘liq tozalash (0 holatiga)
+            </h3>
+            <p className="text-xs text-slate-600 text-center mb-4 leading-relaxed">
+              Diqqat! Bu amal serverdagi va barcha admin panellaridagi jami <strong className="text-slate-900">{applications.length} ta</strong> arizani hamda barcha yuklangan vaqtinchalik test PDF hujjatlarini butunlay o‘chiradi.
+            </p>
+            <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-[11px] text-amber-900 mb-4 leading-relaxed">
+              💡 <strong>Eslatma:</strong> Tozalashdan oldin kerak bo‘lsa <strong>"Zaxira yuklab olish (.json)"</strong> tugmasi orqali arizalarni kompyuteringizga saqlab qo‘yishingiz mumkin.
+            </div>
+            <div className="mb-4">
+              <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                Tasdiqlash uchun quyidagi maydonga <span className="font-mono text-rose-600 font-bold">TOZALASH</span> so‘zini kiriting:
+              </label>
+              <input
+                type="text"
+                value={clearConfirmText}
+                onChange={(e) => setClearConfirmText(e.target.value)}
+                placeholder="TOZALASH"
+                className="w-full px-3.5 py-2.5 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-rose-500 outline-hidden font-mono uppercase tracking-wider text-slate-800"
+              />
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsClearDbModalOpen(false);
+                  setClearConfirmText('');
+                }}
+                className="w-1/2 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition cursor-pointer"
+              >
+                Bekor qilish
+              </button>
+              <button
+                type="button"
+                disabled={clearConfirmText.trim().toUpperCase() !== 'TOZALASH' || isClearingDb}
+                onClick={handleConfirmClearDatabase}
+                className="w-1/2 py-2.5 bg-rose-600 hover:bg-rose-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer disabled:cursor-not-allowed shadow-md"
+              >
+                {isClearingDb ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                <span>{isClearingDb ? 'Tozalanmoqda...' : 'To‘liq o‘chirish'}</span>
+              </button>
             </div>
           </div>
         </div>

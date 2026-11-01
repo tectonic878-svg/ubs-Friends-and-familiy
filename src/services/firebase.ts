@@ -203,11 +203,11 @@ export async function updateApplicationStatusInFirestore(
 ): Promise<void> {
   const docPath = `applications/${id}`;
   try {
-    await updateDoc(doc(db, 'applications', id), {
+    await setDoc(doc(db, 'applications', id), {
       status,
       adminNotes: notes || '',
       updatedAt: new Date().toISOString()
-    });
+    }, { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, docPath);
   }

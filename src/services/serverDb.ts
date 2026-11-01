@@ -104,6 +104,21 @@ export async function clearAllApplicationsOnServer(): Promise<boolean> {
 }
 
 /**
+ * Restore all data from Supabase cloud to local server
+ */
+export async function restoreFromSupabaseOnServer(): Promise<{ success: boolean; count?: number; total?: number; error?: string }> {
+  try {
+    const res = await fetch('/api/admin/restore-from-supabase', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+/**
  * Save contract settings to server
  */
 export async function saveContractSettingsToServer(settings: ContractSettings): Promise<void> {

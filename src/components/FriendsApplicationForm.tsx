@@ -21,6 +21,7 @@ import {
   cleanPhoneDigits
 } from '../utils/formatters';
 import { saveAuthenticDocument } from '../services/documentStorage';
+import { saveDocToVault } from '../utils/indexedDbVault';
 
 interface FriendsApplicationFormProps {
   currentUser?: RegisteredUser;
@@ -205,75 +206,88 @@ export const FriendsApplicationForm: React.FC<FriendsApplicationFormProps> = ({
     const safePrimaryPhoneClean = cleanPhoneDigits(primaryPhone1);
     
     // Ensure authentic documents are registered with final student JSHSHR and Phone aliases
-    if (primaryPassportDoc) {
+    const primaryPassData = primaryPassportDoc?.dataUrl || (primaryPassportDoc?.url?.startsWith('data:') ? primaryPassportDoc.url : undefined);
+    const primaryCertData = primaryCertificateDoc?.dataUrl || (primaryCertificateDoc?.url?.startsWith('data:') ? primaryCertificateDoc.url : undefined);
+
+    if (primaryPassportDoc && primaryPassData) {
       saveAuthenticDocument(
         primaryPassportDoc.id,
         `${primaryJshshr}.pdf`,
-        primaryPassportDoc.dataUrl || primaryPassportDoc.url,
+        primaryPassData,
         primaryPassportDoc.size,
-        primaryPassportDoc.dataUrl,
+        primaryPassData,
         [primaryJshshr]
       ).catch(() => {});
+      saveDocToVault(primaryPassportDoc, [primaryJshshr]).catch(() => {});
     }
 
-    if (primaryCertificateDoc) {
+    if (primaryCertificateDoc && primaryCertData) {
       saveAuthenticDocument(
         primaryCertificateDoc.id,
         `${safePrimaryPhoneClean}.pdf`,
-        primaryCertificateDoc.dataUrl || primaryCertificateDoc.url,
+        primaryCertData,
         primaryCertificateDoc.size,
-        primaryCertificateDoc.dataUrl,
+        primaryCertData,
         [safePrimaryPhoneClean, safePrimaryPhoneClean.slice(3)]
       ).catch(() => {});
+      saveDocToVault(primaryCertificateDoc, [safePrimaryPhoneClean, safePrimaryPhoneClean.slice(3)]).catch(() => {});
     }
 
     const finalizedPrimaryPassport: DocumentFile | undefined = primaryPassportDoc ? {
       ...primaryPassportDoc,
       name: `${primaryJshshr}.pdf`,
-      url: primaryPassportDoc.url || `/api/documents/${primaryPassportDoc.id}`
+      url: primaryPassData || primaryPassportDoc.url || `/api/documents/${primaryPassportDoc.id}`,
+      dataUrl: primaryPassData
     } : undefined;
 
     const finalizedPrimaryCertificate: DocumentFile | undefined = primaryCertificateDoc ? {
       ...primaryCertificateDoc,
       name: `${safePrimaryPhoneClean}.pdf`,
-      url: primaryCertificateDoc.url || `/api/documents/${primaryCertificateDoc.id}`
+      url: primaryCertData || primaryCertificateDoc.url || `/api/documents/${primaryCertificateDoc.id}`,
+      dataUrl: primaryCertData
     } : undefined;
 
     const friendsList: StudentInfo[] = friends.map((f) => {
       const cleanPhone = cleanPhoneDigits(f.phone1);
+      const fPassData = f.passportDoc?.dataUrl || (f.passportDoc?.url?.startsWith('data:') ? f.passportDoc.url : undefined);
+      const fCertData = f.certificateDoc?.dataUrl || (f.certificateDoc?.url?.startsWith('data:') ? f.certificateDoc.url : undefined);
 
-      if (f.passportDoc) {
+      if (f.passportDoc && fPassData) {
         saveAuthenticDocument(
           f.passportDoc.id,
           `${f.jshshr}.pdf`,
-          f.passportDoc.dataUrl || f.passportDoc.url,
+          fPassData,
           f.passportDoc.size,
-          f.passportDoc.dataUrl,
+          fPassData,
           [f.jshshr]
         ).catch(() => {});
+        saveDocToVault(f.passportDoc, [f.jshshr]).catch(() => {});
       }
 
-      if (f.certificateDoc) {
+      if (f.certificateDoc && fCertData) {
         saveAuthenticDocument(
           f.certificateDoc.id,
           `${cleanPhone}.pdf`,
-          f.certificateDoc.dataUrl || f.certificateDoc.url,
+          fCertData,
           f.certificateDoc.size,
-          f.certificateDoc.dataUrl,
+          fCertData,
           [cleanPhone, cleanPhone.slice(3)]
         ).catch(() => {});
+        saveDocToVault(f.certificateDoc, [cleanPhone, cleanPhone.slice(3)]).catch(() => {});
       }
 
       const safePassport: DocumentFile | undefined = f.passportDoc ? {
         ...f.passportDoc,
         name: `${f.jshshr}.pdf`,
-        url: f.passportDoc.url || `/api/documents/${f.passportDoc.id}`
+        url: fPassData || f.passportDoc.url || `/api/documents/${f.passportDoc.id}`,
+        dataUrl: fPassData
       } : undefined;
 
       const safeCertificate: DocumentFile | undefined = f.certificateDoc ? {
         ...f.certificateDoc,
         name: `${cleanPhone}.pdf`,
-        url: f.certificateDoc.url || `/api/documents/${f.certificateDoc.id}`
+        url: fCertData || f.certificateDoc.url || `/api/documents/${f.certificateDoc.id}`,
+        dataUrl: fCertData
       } : undefined;
 
       return {

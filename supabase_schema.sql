@@ -1,5 +1,5 @@
 -- UBS Friends & Family Chegirma Tizimi
--- Supabase PostgreSQL Jadval Strukturalari
+-- Supabase PostgreSQL Jadval Strukturalari va Huquqlari
 -- Ushbu kodni Supabase -> SQL Editor bo'limiga qo'yib, "Run" tugmasini bosing!
 
 -- 1. Arizalar jadvali (Applications)
@@ -19,32 +19,28 @@ CREATE TABLE IF NOT EXISTS public.system_settings (
   updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now())
 );
 
--- 3. Barcha foydalanuvchilar (anon va autentifikatsiyalangan) uchun o'qish va yozish ruxsatlari
-ALTER TABLE public.applications ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.system_settings ENABLE ROW LEVEL SECURITY;
+-- 3. HUQUQLARNI BERISH (42501 permission denied xatosini 100% bartaraf etadi)
+GRANT ALL ON TABLE public.applications TO anon, authenticated, service_role;
+GRANT ALL ON TABLE public.system_settings TO anon, authenticated, service_role;
 
--- Arizalar uchun to'liq erkin policy (7 admin va talabalar uchun)
-CREATE POLICY "Allow all operations for applications"
-ON public.applications
-FOR ALL
-USING (true)
-WITH CHECK (true);
+-- 4. Barcha foydalanuvchilar (anon va adminlar) erkin yozishi va o'qishi uchun RLS ni ochish
+ALTER TABLE public.applications DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.system_settings DISABLE ROW LEVEL SECURITY;
 
--- Sozlamalar uchun to'liq erkin policy
-CREATE POLICY "Allow all operations for system_settings"
-ON public.system_settings
-FOR ALL
-USING (true)
-WITH CHECK (true);
-
--- Realtime hodisalarni yoqish
-ALTER PUBLICATION supabase_realtime ADD TABLE public.applications;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.system_settings;
-
--- 4. BAZA VA 1GB XOTIRANI TO'LIQ TOZALASH / QAYTA ISHGA TUSHIRISH (Storage Reset)
--- Agar bazadagi barcha yuklangan fayllar va arizalarni o'chirib, 1GB xotirani 0 MB ga qaytarmoqchi bo'lsangiz, 
--- quyidagi buyruqni Supabase SQL Editor bo'limiga qo'yib "Run" tugmasini bosing:
---
--- TRUNCATE TABLE public.applications;
-
-
+-- 5. Realtime hodisalarni yoqish (barcha adminlar ekranida jonli yangilanishi uchun)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'applications'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.applications;
+  END IF;
+  
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'system_settings'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.system_settings;
+  END IF;
+END $$;

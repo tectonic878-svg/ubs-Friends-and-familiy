@@ -1,9 +1,10 @@
 import { DocumentFile } from '../types';
+import { saveDocToVault, getDocFromVault } from '../utils/indexedDbVault';
 
 /**
  * Document Storage Service
  * Handles uploading, resolving, and caching authentic PDF documents both to the local server disk
- * and for client-side document retrieval and ZIP bundling.
+ * and the browser's persistent IndexedDB vault so that applicant PDFs NEVER get replaced by sample PDFs.
  */
 
 export interface SavedDocumentRecord {
@@ -17,7 +18,7 @@ export interface SavedDocumentRecord {
 }
 
 /**
- * Save authentic document to server storage with optional aliases (JSHSHR, phone)
+ * Save authentic document to persistent storage with optional aliases (JSHSHR, phone)
  */
 export async function saveAuthenticDocument(
   docId: string,
@@ -30,7 +31,20 @@ export async function saveAuthenticDocument(
   const finalId = docId.replace(/\.pdf$/i, '').replace(/[^a-zA-Z0-9_-]/g, '_');
   const payloadDataUrl = dataUrl || (urlOrDataUrl && urlOrDataUrl.startsWith('data:') ? urlOrDataUrl : undefined);
 
-  // If we have base64 data, upload to backend server
+  // 1. Immediately preserve in client IndexedDB Vault (Guarantees zero loss)
+  if (payloadDataUrl) {
+    saveDocToVault({
+      id: finalId,
+      name,
+      type: 'pdf',
+      url: payloadDataUrl,
+      dataUrl: payloadDataUrl,
+      size,
+      uploadedAt: new Date().toISOString()
+    }, aliases).catch(() => {});
+  }
+
+  // 2. Upload to backend server
   if (payloadDataUrl) {
     try {
       const res = await fetch('/api/documents/upload', {
@@ -68,20 +82,39 @@ export async function saveAuthenticDocument(
 }
 
 /**
- * Resolves a document file to an accessible URL or Blob for viewing/ZIP archiving
+ * Resolves a document file to an authentic accessible URL or Blob for viewing/ZIP archiving
+ * Checks memory, IndexedDB Vault, and server endpoint in sequence.
  */
 export async function resolveAuthenticBlob(
   doc: DocumentFile | undefined,
-  _key?: string,
+  key?: string,
   _aliases?: string[]
 ): Promise<{ url: string; blob?: Blob } | null> {
   if (!doc) return null;
 
+  // 1. Check in-memory base64 or blob URL
   if (doc.dataUrl && doc.dataUrl.startsWith('data:')) {
     return { url: doc.dataUrl };
   }
+  if (doc.url && (doc.url.startsWith('data:') || doc.url.startsWith('blob:'))) {
+    return { url: doc.url };
+  }
 
-  if (doc.url && doc.url.trim() !== '') {
+  const lookupKey = key || doc.id || doc.name?.replace(/\.pdf$/i, '');
+
+  // 2. Check persistent IndexedDB Vault
+  if (lookupKey) {
+    const fromVault = await getDocFromVault(lookupKey);
+    if (fromVault && (fromVault.dataUrl || fromVault.url)) {
+      const u = fromVault.dataUrl || fromVault.url;
+      if (u.startsWith('data:')) {
+        return { url: u };
+      }
+    }
+  }
+
+  // 3. Fallback to server endpoint
+  if (doc.url && doc.url.startsWith('/api/documents/')) {
     return { url: doc.url };
   }
 

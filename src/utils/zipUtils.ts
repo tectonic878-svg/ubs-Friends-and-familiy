@@ -45,10 +45,20 @@ async function urlToUint8Array(url: string): Promise<Uint8Array> {
   return new Uint8Array(arrayBuffer);
 }
 
+function getDocExtension(name?: string, docType?: string): string {
+  if (name && name.includes('.')) {
+    const ext = name.split('.').pop()?.toLowerCase();
+    if (ext && ['pdf', 'jpg', 'jpeg', 'png', 'webp'].includes(ext)) {
+      return ext;
+    }
+  }
+  return docType === 'image' ? 'jpg' : 'pdf';
+}
+
 /**
- * Collects all PDF documents from all applications with strict naming rules:
- * 1-fayl: {jshshr}.pdf
- * 2-fayl: {telefon}.pdf
+ * Collects all documents (PDF, JPG, PNG) from all applications with strict naming rules:
+ * 1-fayl: {jshshr}.{ext}
+ * 2-fayl: {telefon}.{ext}
  */
 export async function collectApplicationPdfs(applications: AnyApplication[]): Promise<ZipItem[]> {
   const items: ZipItem[] = [];
@@ -68,9 +78,10 @@ export async function collectApplicationPdfs(applications: AnyApplication[]): Pr
         if (s.passportDoc) {
           const res1 = await resolveAuthenticBlob(s.passportDoc, s.jshshr, [s.jshshr]);
           if (res1 && res1.url) {
+            const ext = getDocExtension(s.passportDoc.name, s.passportDoc.type);
             items.push({
               folderName,
-              fileName: `${s.jshshr || 'pasport'}.pdf`,
+              fileName: `${s.jshshr || 'pasport'}.${ext}`,
               url: res1.url
             });
           }
@@ -81,9 +92,10 @@ export async function collectApplicationPdfs(applications: AnyApplication[]): Pr
           const cleanPhone = cleanPhoneDigits(s.phone1 || s.phone || '');
           const res2 = await resolveAuthenticBlob(s.certificateDoc, cleanPhone, [cleanPhone, s.jshshr]);
           if (res2 && res2.url) {
+            const ext = getDocExtension(s.certificateDoc.name, s.certificateDoc.type);
             items.push({
               folderName,
-              fileName: `${cleanPhone || s.jshshr + '_doc2'}.pdf`,
+              fileName: `${cleanPhone || s.jshshr + '_doc2'}.${ext}`,
               url: res2.url
             });
           }
@@ -95,9 +107,10 @@ export async function collectApplicationPdfs(applications: AnyApplication[]): Pr
         if (m.passportDoc) {
           const res1 = await resolveAuthenticBlob(m.passportDoc, m.jshshr, [m.jshshr]);
           if (res1 && res1.url) {
+            const ext = getDocExtension(m.passportDoc.name, m.passportDoc.type);
             items.push({
               folderName,
-              fileName: `${m.jshshr || 'pasport'}.pdf`,
+              fileName: `${m.jshshr || 'pasport'}.${ext}`,
               url: res1.url
             });
           }
@@ -108,9 +121,10 @@ export async function collectApplicationPdfs(applications: AnyApplication[]): Pr
           const cleanPhone = cleanPhoneDigits(m.phone1 || m.phone || '');
           const res2 = await resolveAuthenticBlob(m.birthOrMarriageDoc, cleanPhone, [cleanPhone, m.jshshr]);
           if (res2 && res2.url) {
+            const ext = getDocExtension(m.birthOrMarriageDoc.name, m.birthOrMarriageDoc.type);
             items.push({
               folderName,
-              fileName: `${cleanPhone || m.jshshr + '_doc2'}.pdf`,
+              fileName: `${cleanPhone || m.jshshr + '_doc2'}.${ext}`,
               url: res2.url
             });
           }

@@ -50,21 +50,7 @@ export const formatPhoneNumber = (val: string): string => {
  */
 export function dataUrlToBlob(dataUrl: string, fallbackMime: string = 'application/pdf'): Blob {
   if (!dataUrl || !dataUrl.startsWith('data:')) {
-    if (fallbackMime === 'application/pdf') {
-      return createAuthenticPdfBlob({
-        title: 'UBS Rasmiy Hujjat',
-        subTitle: 'University of Business and Sciences'
-      });
-    }
     return new Blob([dataUrl || ''], { type: fallbackMime });
-  }
-
-  // If it is an SVG dataUrl masquerading as PDF, convert to real PDF binary
-  if (dataUrl.includes('image/svg') || dataUrl.includes('<svg')) {
-    return createAuthenticPdfBlob({
-      title: 'UBS Rasmiy Hujjat (PDF)',
-      subTitle: 'Tasdiqlangan elektron nusxa'
-    });
   }
 
   const commaIdx = dataUrl.indexOf(',');
@@ -86,17 +72,11 @@ export function dataUrlToBlob(dataUrl: string, fallbackMime: string = 'applicati
       }
       return new Blob([bytes], { type: mime });
     } catch {
-      if (fallbackMime === 'application/pdf') {
-        return createAuthenticPdfBlob({ title: 'UBS Hujjat' });
-      }
       return new Blob([], { type: fallbackMime });
     }
   } else {
     try {
       const decoded = decodeURIComponent(data);
-      if (decoded.includes('<svg')) {
-        return createAuthenticPdfBlob({ title: 'UBS Hujjat' });
-      }
       return new Blob([decoded], { type: mime });
     } catch {
       return new Blob([], { type: fallbackMime });

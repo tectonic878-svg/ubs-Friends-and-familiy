@@ -52,58 +52,89 @@ export function optimizeApplicationForCloud(app: AnyApplication): AnyApplication
   return clone;
 }
 
-function mergeSingleAppDocs(base: AnyApplication, other: AnyApplication): AnyApplication {
-  const result: AnyApplication = JSON.parse(JSON.stringify(base));
-  if (result.type === 'friends' && other.type === 'friends') {
-    if (!result.applicantStudent?.passportDoc?.url && other.applicantStudent?.passportDoc?.url) {
-      if (result.applicantStudent?.passportDoc) result.applicantStudent.passportDoc.url = other.applicantStudent.passportDoc.url;
-      else if (result.applicantStudent) result.applicantStudent.passportDoc = other.applicantStudent.passportDoc;
-    }
-    if (!result.applicantStudent?.certificateDoc?.url && other.applicantStudent?.certificateDoc?.url) {
-      if (result.applicantStudent?.certificateDoc) result.applicantStudent.certificateDoc.url = other.applicantStudent.certificateDoc.url;
-      else if (result.applicantStudent) result.applicantStudent.certificateDoc = other.applicantStudent.certificateDoc;
-    }
-    if (!result.friendStudent?.passportDoc?.url && other.friendStudent?.passportDoc?.url) {
-      if (result.friendStudent?.passportDoc) result.friendStudent.passportDoc.url = other.friendStudent.passportDoc.url;
-      else if (result.friendStudent) result.friendStudent.passportDoc = other.friendStudent.passportDoc;
-    }
-    if (!result.friendStudent?.certificateDoc?.url && other.friendStudent?.certificateDoc?.url) {
-      if (result.friendStudent?.certificateDoc) result.friendStudent.certificateDoc.url = other.friendStudent.certificateDoc.url;
-      else if (result.friendStudent) result.friendStudent.certificateDoc = other.friendStudent.certificateDoc;
-    }
-    if (Array.isArray(result.friendsList) && Array.isArray(other.friendsList)) {
-      result.friendsList.forEach((fr, idx) => {
-        const oFr = other.friendsList[idx] || other.friendsList.find(f => f.jshshr === fr.jshshr);
-        if (oFr) {
-          if (!fr.passportDoc?.url && oFr.passportDoc?.url) {
-            if (fr.passportDoc) fr.passportDoc.url = oFr.passportDoc.url;
-            else fr.passportDoc = oFr.passportDoc;
-          }
-          if (!fr.certificateDoc?.url && oFr.certificateDoc?.url) {
-            if (fr.certificateDoc) fr.certificateDoc.url = oFr.certificateDoc.url;
-            else fr.certificateDoc = oFr.certificateDoc;
-          }
-        }
-      });
-    }
-  } else if (result.type === 'family' && other.type === 'family') {
-    if (Array.isArray(result.members) && Array.isArray(other.members)) {
-      result.members.forEach((m, idx) => {
-        const oMember = other.members[idx] || other.members.find(lm => lm.jshshr === m.jshshr);
-        if (oMember) {
-          if (!m.passportDoc?.url && oMember.passportDoc?.url) {
-            if (m.passportDoc) m.passportDoc.url = oMember.passportDoc.url;
-            else m.passportDoc = oMember.passportDoc;
-          }
-          if (!m.birthOrMarriageDoc?.url && oMember.birthOrMarriageDoc?.url) {
-            if (m.birthOrMarriageDoc) m.birthOrMarriageDoc.url = oMember.birthOrMarriageDoc.url;
-            else m.birthOrMarriageDoc = oMember.birthOrMarriageDoc;
-          }
-        }
-      });
-    }
+function mergeDoc(target?: DocumentFile, source?: DocumentFile): DocumentFile | undefined {
+  if (!target && !source) return undefined;
+  if (!target) return source ? JSON.parse(JSON.stringify(source)) : undefined;
+  if (!source) return target;
+
+  const merged: DocumentFile = { ...target };
+  if (!merged.dataUrl && source.dataUrl) {
+    merged.dataUrl = source.dataUrl;
   }
-  return result;
+  if (source.url && source.url.startsWith('data:') && !merged.dataUrl) {
+    merged.dataUrl = source.url;
+  }
+  if ((!merged.url || merged.url.trim() === '') && source.url) {
+    merged.url = source.url;
+  }
+  if (!merged.size && source.size) {
+    merged.size = source.size;
+  }
+  if (!merged.driveFileId && source.driveFileId) {
+    merged.driveFileId = source.driveFileId;
+    merged.driveWebViewLink = source.driveWebViewLink;
+    merged.driveDownloadLink = source.driveDownloadLink;
+  }
+  return merged;
+}
+
+export function mergeSingleAppDocs(base: AnyApplication, other: AnyApplication): AnyApplication {
+  if (!base) return other;
+  if (!other) return base;
+  try {
+    const result: AnyApplication = JSON.parse(JSON.stringify(base));
+    if (result.type === 'friends' && other.type === 'friends') {
+      if (result.applicantStudent && other.applicantStudent) {
+        result.applicantStudent.passportDoc = mergeDoc(result.applicantStudent.passportDoc, other.applicantStudent.passportDoc);
+        result.applicantStudent.certificateDoc = mergeDoc(result.applicantStudent.certificateDoc, other.applicantStudent.certificateDoc);
+      } else if (!result.applicantStudent && other.applicantStudent) {
+        result.applicantStudent = other.applicantStudent;
+      }
+
+      if (result.friendStudent && other.friendStudent) {
+        result.friendStudent.passportDoc = mergeDoc(result.friendStudent.passportDoc, other.friendStudent.passportDoc);
+        result.friendStudent.certificateDoc = mergeDoc(result.friendStudent.certificateDoc, other.friendStudent.certificateDoc);
+      } else if (!result.friendStudent && other.friendStudent) {
+        result.friendStudent = other.friendStudent;
+      }
+
+      if (Array.isArray(other.friendsList) && other.friendsList.length > 0) {
+        if (!Array.isArray(result.friendsList) || result.friendsList.length === 0) {
+          result.friendsList = other.friendsList;
+        } else {
+          result.friendsList = result.friendsList.map((fr, idx) => {
+            const oFr = other.friendsList[idx] || other.friendsList.find((f) => f && f.jshshr === fr.jshshr);
+            if (!oFr) return fr;
+            return {
+              ...fr,
+              passportDoc: mergeDoc(fr.passportDoc, oFr.passportDoc),
+              certificateDoc: mergeDoc(fr.certificateDoc, oFr.certificateDoc)
+            };
+          });
+        }
+      }
+    } else if (result.type === 'family' && other.type === 'family') {
+      if (Array.isArray(other.members) && other.members.length > 0) {
+        if (!Array.isArray(result.members) || result.members.length === 0) {
+          result.members = other.members;
+        } else {
+          result.members = result.members.map((m, idx) => {
+            const oMember = other.members[idx] || other.members.find((lm) => lm && lm.jshshr === m.jshshr);
+            if (!oMember) return m;
+            return {
+              ...m,
+              passportDoc: mergeDoc(m.passportDoc, oMember.passportDoc),
+              birthOrMarriageDoc: mergeDoc(m.birthOrMarriageDoc, oMember.birthOrMarriageDoc)
+            };
+          });
+        }
+      }
+    }
+    return result;
+  } catch (err) {
+    console.warn('mergeSingleAppDocs error:', err);
+    return base;
+  }
 }
 
 /**
@@ -126,8 +157,27 @@ export function mergeApplicationsPreservingNewest(
       const existingTime = new Date((existing as any).updatedAt || existing.createdAt || 0).getTime();
       const newTime = new Date((app as any).updatedAt || app.createdAt || 0).getTime();
 
-      const base = newTime >= existingTime ? app : existing;
-      const other = newTime >= existingTime ? existing : app;
+      let base: AnyApplication;
+      let other: AnyApplication;
+
+      if (newTime > existingTime) {
+        base = app;
+        other = existing;
+      } else if (existingTime > newTime) {
+        base = existing;
+        other = app;
+      } else {
+        // If timestamps are equal, prefer the one with a resolved status ('tasdiqlandi' or 'rad_etildi')
+        const isAppDecided = app.status === 'tasdiqlandi' || app.status === 'rad_etildi';
+        const isExistingDecided = existing.status === 'tasdiqlandi' || existing.status === 'rad_etildi';
+        if (isAppDecided && !isExistingDecided) {
+          base = app;
+          other = existing;
+        } else {
+          base = existing;
+          other = app;
+        }
+      }
 
       map.set(app.id, mergeSingleAppDocs(base, other));
     }

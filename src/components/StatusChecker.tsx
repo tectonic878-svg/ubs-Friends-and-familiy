@@ -14,16 +14,17 @@ export const StatusChecker: React.FC<StatusCheckerProps> = ({ applications, onPr
   const [searched, setSearched] = useState(Boolean(defaultJshshr));
 
   const foundApps = applications.filter((app) => {
-    if (!jshshrQuery.trim()) return false;
+    if (!jshshrQuery.trim() || !app || !app.id) return false;
     const q = jshshrQuery.trim().toLowerCase();
     if (app.id.toLowerCase() === q) return true;
 
     if (app.type === 'friends') {
-      const inFriendsList = app.friendsList?.some((f) => f.jshshr === q);
-      return app.applicantStudent.jshshr === q || app.friendStudent?.jshshr === q || Boolean(inFriendsList);
-    } else {
-      return app.members.some((m) => m.jshshr === q);
+      const inFriendsList = Array.isArray(app.friendsList) ? app.friendsList.some((f) => f && f.jshshr === q) : false;
+      return app.applicantStudent?.jshshr === q || app.friendStudent?.jshshr === q || Boolean(inFriendsList);
+    } else if (app.type === 'family') {
+      return Array.isArray(app.members) ? app.members.some((m) => m && m.jshshr === q) : false;
     }
+    return false;
   });
 
   const handleSearch = (e: React.FormEvent) => {

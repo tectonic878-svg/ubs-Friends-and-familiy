@@ -19,6 +19,7 @@ import { FileUploadField } from './FileUploadField';
 import { VideoTutorialGuide } from './VideoTutorialGuide';
 import { UNIVERSITIES_FACULTIES } from '../data/mockData';
 import { saveAuthenticDocument } from '../services/documentStorage';
+import { saveDocToVault } from '../utils/indexedDbVault';
 import { 
   formatJshshr, 
   formatPassportSeria, 
@@ -175,39 +176,45 @@ export const FamilyApplicationForm: React.FC<FamilyApplicationFormProps> = ({
 
     const finalizedMembers: FamilyMemberInfo[] = members.map((m) => {
       const cleanPhone = cleanPhoneDigits(m.phone1);
+      const mPassData = m.passportDoc?.dataUrl || (m.passportDoc?.url?.startsWith('data:') ? m.passportDoc.url : undefined);
+      const mBirthData = m.birthOrMarriageDoc?.dataUrl || (m.birthOrMarriageDoc?.url?.startsWith('data:') ? m.birthOrMarriageDoc.url : undefined);
 
-      if (m.passportDoc) {
+      if (m.passportDoc && mPassData) {
         saveAuthenticDocument(
           m.passportDoc.id,
           `${m.jshshr}.pdf`,
-          m.passportDoc.dataUrl || m.passportDoc.url,
+          mPassData,
           m.passportDoc.size,
-          m.passportDoc.dataUrl,
+          mPassData,
           [m.jshshr]
         ).catch(() => {});
+        saveDocToVault(m.passportDoc, [m.jshshr]).catch(() => {});
       }
 
-      if (m.birthOrMarriageDoc) {
+      if (m.birthOrMarriageDoc && mBirthData) {
         saveAuthenticDocument(
           m.birthOrMarriageDoc.id,
           `${cleanPhone || m.jshshr + '_guvohnoma'}.pdf`,
-          m.birthOrMarriageDoc.dataUrl || m.birthOrMarriageDoc.url,
+          mBirthData,
           m.birthOrMarriageDoc.size,
-          m.birthOrMarriageDoc.dataUrl,
+          mBirthData,
           [cleanPhone, m.jshshr, cleanPhone.slice(3)]
         ).catch(() => {});
+        saveDocToVault(m.birthOrMarriageDoc, [cleanPhone, m.jshshr, cleanPhone.slice(3)]).catch(() => {});
       }
 
       const safePassport: DocumentFile | undefined = m.passportDoc ? {
         ...m.passportDoc,
         name: `${m.jshshr}.pdf`,
-        url: m.passportDoc.url || `/api/documents/${m.passportDoc.id}`
+        url: mPassData || m.passportDoc.url || `/api/documents/${m.passportDoc.id}`,
+        dataUrl: mPassData
       } : undefined;
 
       const safeBirthDoc: DocumentFile | undefined = m.birthOrMarriageDoc ? {
         ...m.birthOrMarriageDoc,
         name: `${cleanPhone || m.jshshr + '_guvohnoma'}.pdf`,
-        url: m.birthOrMarriageDoc.url || `/api/documents/${m.birthOrMarriageDoc.id}`
+        url: mBirthData || m.birthOrMarriageDoc.url || `/api/documents/${m.birthOrMarriageDoc.id}`,
+        dataUrl: mBirthData
       } : undefined;
 
       return {

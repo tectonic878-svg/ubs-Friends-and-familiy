@@ -1,3 +1,10 @@
+import dns from 'dns';
+if (dns.setDefaultResultOrder) {
+  dns.setDefaultResultOrder('ipv4first');
+}
+// Set custom DNS servers if resolution fails
+dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
+
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import fs from 'fs';
@@ -25,6 +32,7 @@ if (!fs.existsSync(DOCS_DIR)) {
 const APPS_FILE = path.join(DATA_DIR, 'applications.json');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const DOCS_MANIFEST_FILE = path.join(DOCS_DIR, 'manifest.json');
+const DOCS_VAULT_FILE = path.join(DATA_DIR, 'documents_vault.json');
 
 // Initialize files if not existing
 if (!fs.existsSync(APPS_FILE)) {
@@ -35,6 +43,26 @@ if (!fs.existsSync(SETTINGS_FILE)) {
 }
 if (!fs.existsSync(DOCS_MANIFEST_FILE)) {
   fs.writeFileSync(DOCS_MANIFEST_FILE, JSON.stringify({}, null, 2), 'utf8');
+}
+if (!fs.existsSync(DOCS_VAULT_FILE)) {
+  fs.writeFileSync(DOCS_VAULT_FILE, JSON.stringify({}, null, 2), 'utf8');
+}
+
+function getStoredDocsVault(): Record<string, { id: string; name: string; dataUrl: string; size?: string; aliases?: string[]; updatedAt?: string }> {
+  try {
+    const raw = fs.readFileSync(DOCS_VAULT_FILE, 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+function saveStoredDocsVault(vault: Record<string, any>) {
+  try {
+    fs.writeFileSync(DOCS_VAULT_FILE, JSON.stringify(vault, null, 2), 'utf8');
+  } catch (err) {
+    console.error('Error writing docs vault file:', err);
+  }
 }
 
 // In-memory read helpers
@@ -106,6 +134,14 @@ function getCustomStorageDir(): string {
 function writeBufferToAllStorageLocations(filename: string, buffer: Buffer): string {
   const primaryPath = path.join(DOCS_DIR, filename);
   try {
+    // PROTECT AUTHENTIC PDFS: Never overwrite a larger/existing authentic file with a smaller/empty one
+    if (fs.existsSync(primaryPath)) {
+      const existing = fs.readFileSync(primaryPath);
+      if (existing.length > buffer.length) {
+        console.warn(`[Himoya] Mavjud PDF (${existing.length} bayt) kichikroq yangi fayl bilan almashtirilmadi.`);
+        return primaryPath;
+      }
+    }
     fs.writeFileSync(primaryPath, buffer);
   } catch (e) {
     console.error('Error writing to DOCS_DIR:', e);
@@ -216,6 +252,22 @@ function persistDocToDisk(
         };
         saveDocsManifest(manifest);
 
+        // Also persist in documents_vault.json so it survives container restarts
+        const vault = getStoredDocsVault();
+        const vaultRecord = {
+          id: docId,
+          name: docItem.name || `${docId}.pdf`,
+          dataUrl: rawDataUrl,
+          size: sizeStr,
+          aliases: Array.from(aliases),
+          updatedAt: new Date().toISOString()
+        };
+        vault[docId] = vaultRecord;
+        for (const alias of aliases) {
+          vault[alias] = vaultRecord;
+        }
+        saveStoredDocsVault(vault);
+
         console.log(`[Kompyuter Serveri] Yangi PDF hujjat kompyuter diskiga saqlandi: ${filePath} (${sizeStr})`);
         return `/api/documents/${docId}`;
       }
@@ -246,6 +298,8 @@ function processApplicationDocs(app: any): any {
     }
     const safeUrl = persistDocToDisk(d, jshshr, phone, role);
     d.url = safeUrl || `/api/documents/${d.id}`;
+    // CRITICAL: Strip heavy base64 dataUrl so applications.json stays lightweight (<50KB) and /api/applications loads instantly!
+    delete d.dataUrl;
     return d;
   };
 
@@ -360,170 +414,105 @@ function generateAuthenticPdfBuffer(info: {
   return Buffer.from(pdfText, 'binary');
 }
 
-// Helper to check and ensure file is valid binary PDF (not SVG or corrupt)
-function ensureValidPdfFile(filePath: string, fallbackInfo: { title: string; jshshr?: string; phone?: string; studentName?: string }): string {
-  try {
-    if (fs.existsSync(filePath)) {
-      const header = Buffer.alloc(10);
-      const fd = fs.openSync(filePath, 'r');
-      fs.readSync(fd, header, 0, 10, 0);
-      fs.closeSync(fd);
-      const headerStr = header.toString('utf8');
-      if (headerStr.startsWith('%PDF-')) {
-        return filePath;
-      }
-    }
-  } catch {}
 
-  // Generate real PDF
-  const pdfBuf = generateAuthenticPdfBuffer(fallbackInfo);
-  fs.writeFileSync(filePath, pdfBuf);
-  return filePath;
-}
-
-// Helper to locate a document by ID, manifest key, or filename (with fallback to Google Firestore & applications.json)
+// Helper to locate an authentic student document by ID or alias
+// Guarantees that applicant PDFs NEVER get replaced with sample PDFs
 async function findOrFetchDocument(idOrName: string): Promise<{ filePath: string; filename: string; mime: string } | null> {
   const cleanId = idOrName.replace(/\.pdf$/i, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const digitsOnly = idOrName.replace(/[^0-9]/g, '');
   const manifest = getDocsManifest();
-
-  // Find matching student info if available from applications
-  let studentName = 'Talaba';
-  let jshshr = cleanId.replace(/[^0-9]/g, '');
-  let phone = '';
-
+  const vault = getStoredDocsVault();
   const apps = getStoredApplications();
-  for (const app of apps) {
-    const checkStudent = (st: any) => {
-      if (!st) return false;
-      const stJsh = (st.jshshr || '').replace(/[^0-9]/g, '');
-      const stPh = (st.phone1 || st.phone || '').replace(/[^0-9]/g, '');
-      if (stJsh === jshshr || stPh === jshshr || cleanId.includes(stJsh) || cleanId.includes(stPh)) {
-        studentName = st.fullName || studentName;
-        if (stJsh) jshshr = stJsh;
-        if (stPh) phone = stPh;
-        return true;
-      }
-      return false;
-    };
 
-    if (app.type === 'friends') {
-      if (checkStudent(app.applicantStudent) || checkStudent(app.friendStudent)) break;
-      if (Array.isArray(app.friendsList)) {
-        for (const fr of app.friendsList) {
-          if (checkStudent(fr)) break;
-        }
-      }
-    } else if (app.type === 'family' && Array.isArray(app.members)) {
-      for (const m of app.members) {
-        if (checkStudent(m)) break;
-      }
-    }
-  }
-
-  // 1. Direct file check by cleanId.pdf
+  // 1. Direct file check on disk
   const directPath = path.join(DOCS_DIR, `${cleanId}.pdf`);
   if (fs.existsSync(directPath)) {
-    const verifiedPath = ensureValidPdfFile(directPath, { title: `${cleanId}.pdf`, jshshr, phone, studentName });
     const meta = manifest[cleanId];
     return {
-      filePath: verifiedPath,
+      filePath: directPath,
       filename: meta?.name || `${cleanId}.pdf`,
       mime: 'application/pdf'
     };
   }
 
-  // 2. Check manifest for matching id, name, or phone/jshshr
-  for (const [key, meta] of Object.entries(manifest)) {
-    if (
-      key === cleanId ||
-      meta.id === cleanId ||
-      meta.name === idOrName ||
-      meta.name === `${cleanId}.pdf` ||
-      meta.name.replace(/\.pdf$/i, '') === cleanId
-    ) {
-      const candPath = path.join(DOCS_DIR, `${key}.pdf`);
-      if (fs.existsSync(candPath)) {
-        const verifiedPath = ensureValidPdfFile(candPath, { title: meta.name || `${cleanId}.pdf`, jshshr, phone, studentName });
-        return {
-          filePath: verifiedPath,
-          filename: meta.name || `${cleanId}.pdf`,
-          mime: 'application/pdf'
-        };
-      }
+  // 2. Restore from persistent documents_vault.json
+  const vaultEntry = vault[cleanId] || (digitsOnly.length >= 7 ? vault[digitsOnly] : null);
+  if (vaultEntry && vaultEntry.dataUrl) {
+    try {
+      const commaIdx = vaultEntry.dataUrl.indexOf(',');
+      const b64 = commaIdx !== -1 ? vaultEntry.dataUrl.slice(commaIdx + 1) : vaultEntry.dataUrl;
+      const buffer = Buffer.from(b64, 'base64');
+      fs.writeFileSync(directPath, buffer);
+      manifest[cleanId] = {
+        id: cleanId,
+        name: vaultEntry.name || `${cleanId}.pdf`,
+        type: 'pdf',
+        size: vaultEntry.size || `${(buffer.length / (1024 * 1024)).toFixed(2)} MB`,
+        mime: 'application/pdf',
+        path: directPath
+      };
+      saveDocsManifest(manifest);
+      console.log(`[Kompyuter Serveri] Hujjat vaultdan tiklandi: ${cleanId}.pdf`);
+      return {
+        filePath: directPath,
+        filename: vaultEntry.name || `${cleanId}.pdf`,
+        mime: 'application/pdf'
+      };
+    } catch (vErr) {
+      console.warn('Vault restore error:', vErr);
     }
   }
 
-  // 3. Digits search (handling phone numbers with or without 998)
-  const digitsOnly = idOrName.replace(/[^0-9]/g, '');
-  if (digitsOnly.length >= 7) {
-    const variations = [
-      digitsOnly,
-      digitsOnly.startsWith('998') ? digitsOnly.slice(3) : '998' + digitsOnly
-    ];
-    for (const v of variations) {
-      const varPath = path.join(DOCS_DIR, `${v}.pdf`);
-      if (fs.existsSync(varPath)) {
-        const verifiedPath = ensureValidPdfFile(varPath, { title: `${v}.pdf`, jshshr, phone, studentName });
-        return {
-          filePath: verifiedPath,
-          filename: `${v}.pdf`,
-          mime: 'application/pdf'
-        };
-      }
-    }
-  }
-
-  // 4. Fallback search across directory for partial match
-  try {
-    const files = fs.readdirSync(DOCS_DIR);
-    for (const f of files) {
-      if (f.endsWith('.pdf') && (f.toLowerCase().includes(cleanId.toLowerCase()) || (digitsOnly.length >= 7 && f.includes(digitsOnly)))) {
-        const foundPath = path.join(DOCS_DIR, f);
-        const verifiedPath = ensureValidPdfFile(foundPath, { title: f, jshshr, phone, studentName });
-        return {
-          filePath: verifiedPath,
-          filename: f,
-          mime: 'application/pdf'
-        };
-      }
-    }
-  } catch (err) {
-    console.error('Error scanning DOCS_DIR:', err);
-  }
-
-  // 5. Check if applications.json contains embedded base64 data for this document
+  // 3. Restore from applications.json if embedded dataUrl is available
   try {
     for (const app of apps) {
       const docCandidates: any[] = [];
       if (app.type === 'friends') {
-        if (app.applicantStudent?.passportDoc) docCandidates.push(app.applicantStudent.passportDoc);
-        if (app.applicantStudent?.certificateDoc) docCandidates.push(app.applicantStudent.certificateDoc);
-        if (app.friendStudent?.passportDoc) docCandidates.push(app.friendStudent.passportDoc);
-        if (app.friendStudent?.certificateDoc) docCandidates.push(app.friendStudent.certificateDoc);
+        if (app.applicantStudent?.passportDoc) docCandidates.push({ doc: app.applicantStudent.passportDoc, jsh: app.applicantStudent.jshshr, ph: app.applicantStudent.phone1 });
+        if (app.applicantStudent?.certificateDoc) docCandidates.push({ doc: app.applicantStudent.certificateDoc, jsh: app.applicantStudent.jshshr, ph: app.applicantStudent.phone1 });
+        if (app.friendStudent?.passportDoc) docCandidates.push({ doc: app.friendStudent.passportDoc, jsh: app.friendStudent.jshshr, ph: app.friendStudent.phone1 });
+        if (app.friendStudent?.certificateDoc) docCandidates.push({ doc: app.friendStudent.certificateDoc, jsh: app.friendStudent.jshshr, ph: app.friendStudent.phone1 });
         if (Array.isArray(app.friendsList)) {
           app.friendsList.forEach((fr: any) => {
-            if (fr?.passportDoc) docCandidates.push(fr.passportDoc);
-            if (fr?.certificateDoc) docCandidates.push(fr.certificateDoc);
+            if (fr?.passportDoc) docCandidates.push({ doc: fr.passportDoc, jsh: fr.jshshr, ph: fr.phone1 });
+            if (fr?.certificateDoc) docCandidates.push({ doc: fr.certificateDoc, jsh: fr.jshshr, ph: fr.phone1 });
           });
         }
       } else if (app.type === 'family' && Array.isArray(app.members)) {
         app.members.forEach((m: any) => {
-          if (m?.passportDoc) docCandidates.push(m.passportDoc);
-          if (m?.birthOrMarriageDoc) docCandidates.push(m.birthOrMarriageDoc);
+          if (m?.passportDoc) docCandidates.push({ doc: m.passportDoc, jsh: m.jshshr, ph: m.phone1 });
+          if (m?.birthOrMarriageDoc) docCandidates.push({ doc: m.birthOrMarriageDoc, jsh: m.jshshr, ph: m.phone1 });
         });
       }
 
-      for (const d of docCandidates) {
-        if (d && (d.id === cleanId || d.name?.includes(cleanId))) {
+      for (const item of docCandidates) {
+        const d = item.doc;
+        if (!d) continue;
+        const matchesId = d.id === cleanId || d.name?.includes(cleanId);
+        const matchesDigits = digitsOnly.length >= 7 && (
+          (item.jsh && item.jsh.includes(digitsOnly)) || 
+          (item.ph && item.ph.replace(/[^0-9]/g, '').includes(digitsOnly))
+        );
+
+        if (matchesId || matchesDigits) {
           const rawData = d.dataUrl || (d.url?.startsWith('data:') ? d.url : null);
           if (rawData && !rawData.includes('<svg') && !rawData.includes('image/svg')) {
             const commaIdx = rawData.indexOf(',');
             const b64 = commaIdx !== -1 ? rawData.slice(commaIdx + 1) : rawData;
             const buffer = Buffer.from(b64, 'base64');
-            const restoredPath = path.join(DOCS_DIR, `${cleanId}.pdf`);
-            fs.writeFileSync(restoredPath, buffer);
+            fs.writeFileSync(directPath, buffer);
+            manifest[cleanId] = {
+              id: cleanId,
+              name: d.name || `${cleanId}.pdf`,
+              type: 'pdf',
+              size: `${(buffer.length / (1024 * 1024)).toFixed(2)} MB`,
+              mime: 'application/pdf',
+              path: directPath
+            };
+            saveDocsManifest(manifest);
+            console.log(`[Kompyuter Serveri] Hujjat arizalar keshidan tiklandi: ${cleanId}.pdf`);
             return {
-              filePath: restoredPath,
+              filePath: directPath,
               filename: d.name || `${cleanId}.pdf`,
               mime: 'application/pdf'
             };
@@ -535,32 +524,65 @@ async function findOrFetchDocument(idOrName: string): Promise<{ filePath: string
     console.warn('Scan applications error:', appScanErr);
   }
 
-  // 6. Guarantee: Dynamically create and cache authentic PDF file so browser PDF viewer NEVER fails!
-  const generatedPath = path.join(DOCS_DIR, `${cleanId}.pdf`);
-  const finalPdfBuf = generateAuthenticPdfBuffer({
-    title: `${cleanId.toUpperCase()} HUJJATI`,
-    studentName,
-    jshshr: jshshr || cleanId,
-    phone: phone || '+998 90 123 45 67',
-    docType: cleanId.toLowerCase().includes('diplom') || cleanId.toLowerCase().includes('cert') ? 'CERTIFICATE' : 'PASSPORT'
-  });
-  fs.writeFileSync(generatedPath, finalPdfBuf);
+  // 4. Check manifest for matching id, name, or phone/jshshr
+  for (const [key, meta] of Object.entries(manifest)) {
+    if (
+      key === cleanId ||
+      meta.id === cleanId ||
+      meta.name === idOrName ||
+      meta.name === `${cleanId}.pdf` ||
+      meta.name.replace(/\.pdf$/i, '') === cleanId
+    ) {
+      const candPath = path.join(DOCS_DIR, `${key}.pdf`);
+      if (fs.existsSync(candPath)) {
+        return {
+          filePath: candPath,
+          filename: meta.name || `${cleanId}.pdf`,
+          mime: 'application/pdf'
+        };
+      }
+    }
+  }
 
-  manifest[cleanId] = {
-    id: cleanId,
-    name: `${cleanId}.pdf`,
-    type: 'pdf',
-    size: `${(finalPdfBuf.length / (1024 * 1024)).toFixed(2)} MB`,
-    mime: 'application/pdf',
-    path: generatedPath
-  };
-  saveDocsManifest(manifest);
+  // 5. Digits search across DOCS_DIR
+  if (digitsOnly.length >= 7) {
+    const variations = [
+      digitsOnly,
+      digitsOnly.startsWith('998') ? digitsOnly.slice(3) : '998' + digitsOnly
+    ];
+    for (const v of variations) {
+      const varPath = path.join(DOCS_DIR, `${v}.pdf`);
+      if (fs.existsSync(varPath)) {
+        return {
+          filePath: varPath,
+          filename: `${v}.pdf`,
+          mime: 'application/pdf'
+        };
+      }
+    }
+  }
 
-  return {
-    filePath: generatedPath,
-    filename: `${cleanId}.pdf`,
-    mime: 'application/pdf'
-  };
+  // 6. Partial match across directory (skipping mock PDFs)
+  try {
+    const files = fs.readdirSync(DOCS_DIR);
+    for (const f of files) {
+      if (f.endsWith('.pdf') && (f.toLowerCase().includes(cleanId.toLowerCase()) || (digitsOnly.length >= 7 && f.includes(digitsOnly)))) {
+        const foundPath = path.join(DOCS_DIR, f);
+        return {
+          filePath: foundPath,
+          filename: f,
+          mime: 'application/pdf'
+        };
+      }
+    }
+  } catch (err) {
+    console.error('Error scanning DOCS_DIR:', err);
+  }
+
+  // 7. CRITICAL FIX: NEVER generate fake sample mock PDFs!
+  // Real applicant PDFs must NEVER be overwritten or replaced with sample templates
+  console.warn(`[Kompyuter Serveri] Hujjat topilmadi: ${cleanId}`);
+  return null;
 }
 
 // ---------------- REST API ENDPOINTS ----------------
@@ -621,13 +643,36 @@ app.get('/api/server-info', (req, res) => {
 app.get('/api/documents/download-all-zip', async (req, res) => {
   try {
     const zip = new JSZip();
+
+    // 1. Restore any PDFs from persistent documents_vault.json onto disk
+    try {
+      const vault = getStoredDocsVault();
+      for (const [key, item] of Object.entries(vault)) {
+        if (item && item.dataUrl && item.dataUrl.startsWith('data:')) {
+          const destFile = `${key.replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
+          const destPath = path.join(DOCS_DIR, destFile);
+          if (!fs.existsSync(destPath)) {
+            try {
+              const commaIdx = item.dataUrl.indexOf(',');
+              const b64 = commaIdx !== -1 ? item.dataUrl.slice(commaIdx + 1) : item.dataUrl;
+              fs.writeFileSync(destPath, Buffer.from(b64, 'base64'));
+            } catch {}
+          }
+        }
+      }
+    } catch (vErr) {
+      console.warn('Vault to zip restore error:', vErr);
+    }
+
+    // 2. Scan DOCS_DIR
     const files = fs.readdirSync(DOCS_DIR);
     let addedCount = 0;
 
     let summaryText = `UBS TALABA ARIZALARI - BARCHA PDF HUJJATLAR\nServer: Foydalanuvchi Kompyuter Serveri\nSaqlash joyi: ${path.resolve(DOCS_DIR)}\nYuklab olingan vaqt: ${new Date().toLocaleString('uz-UZ')}\nJami PDF fayllar soni: \n\n`;
 
     for (const file of files) {
-      if (file.toLowerCase().endsWith('.pdf')) {
+      const lower = file.toLowerCase();
+      if (lower.endsWith('.pdf') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.png') || lower.endsWith('.webp')) {
         const filePath = path.join(DOCS_DIR, file);
         try {
           const stats = fs.statSync(filePath);
@@ -644,11 +689,10 @@ app.get('/api/documents/download-all-zip', async (req, res) => {
     }
 
     summaryText = summaryText.replace('Jami PDF fayllar soni: ', `Jami PDF fayllar soni: ${addedCount}\n`);
-    zip.file('00_KOMPYUTER_HUJJATLAR_ROYXATI.txt', summaryText);
-
     if (addedCount === 0) {
-      return res.status(404).send('Kompyuter serverida hozircha birorta ham PDF fayl mavjud emas.');
+      summaryText += `\n[ESLATMA] Hozircha bazada talabalar tomonidan yuborilgan arizalar va PDF fayllar mavjud emas.\nTalabalar Friends yoki Family dasturi orqali ariza topshirishi bilan ularning barcha PDF hujjatlari (pasport va diplom/shahodatnoma nusxalari) ushbu arxiv ichida avtomatik jamlanadi.\n`;
     }
+    zip.file('00_KOMPYUTER_HUJJATLAR_ROYXATI.txt', summaryText);
 
     const zipBuffer = await zip.generateAsync({
       type: 'nodebuffer',
@@ -712,6 +756,20 @@ app.post(
       }
 
       saveDocsManifest(manifest);
+
+      const vault = getStoredDocsVault();
+      const b64DataUrl = `data:application/pdf;base64,${buffer.toString('base64')}`;
+      const vRec = {
+        id: cleanDocId,
+        name: nameParam,
+        dataUrl: b64DataUrl,
+        size: sizeStr,
+        aliases: cleanName && cleanName !== cleanDocId ? [cleanName] : [],
+        updatedAt: new Date().toISOString()
+      };
+      vault[cleanDocId] = vRec;
+      if (cleanName && cleanName !== cleanDocId) vault[cleanName] = vRec;
+      saveStoredDocsVault(vault);
 
       console.log(`[Kompyuter Serveri Upload] PDF kompyuterga saqlandi: ${cleanDocId}.pdf (${sizeStr})`);
 
@@ -917,12 +975,28 @@ app.get('/api/applications', (req, res) => {
 });
 
 // 9.1 Clear all applications (Reset to 0)
-app.post('/api/admin/clear-all-applications', (req, res) => {
+app.post(['/api/admin/clear-all-applications', '/api/reset-database'], (req, res) => {
   try {
     saveStoredApplications([]);
     saveDocsManifest({});
-    console.log('[Server] Barcha arizalar 0 holatiga tushirildi (tozalandi).');
-    res.json({ success: true, count: 0, message: 'Barcha arizalar muvaffaqiyatli tozalandi.' });
+    saveStoredDocsVault({});
+
+    // Also remove files in DOCS_DIR (keeping directory intact)
+    try {
+      if (fs.existsSync(DOCS_DIR)) {
+        const files = fs.readdirSync(DOCS_DIR);
+        for (const f of files) {
+          if (f !== 'manifest.json') {
+            try { fs.unlinkSync(path.join(DOCS_DIR, f)); } catch {}
+          }
+        }
+      }
+    } catch (cleanErr) {
+      console.warn('DOCS_DIR tozalash ogohlantirish:', cleanErr);
+    }
+
+    console.log('[Server] Barcha arizalar va hujjatlar 0 holatiga tushirildi (to‘liq tozalandi).');
+    res.json({ success: true, count: 0, message: 'Barcha arizalar va barcha PDF hujjatlar bazadan 100% muvaffaqiyatli tozalandi.' });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -958,6 +1032,7 @@ app.patch('/api/applications/:id/status', (req, res) => {
   const target = apps.find((a: any) => a.id === id);
   if (target) {
     target.status = status;
+    target.updatedAt = new Date().toISOString();
     if (adminNotes !== undefined) {
       target.adminNotes = adminNotes;
     }
@@ -992,6 +1067,149 @@ app.post('/api/applications/bulk-import', (req, res) => {
   saveStoredApplications(mergedList);
 
   res.json({ success: true, count: mergedList.length });
+});
+
+// 12.1 Restore from Supabase (Special request to bring back 57+ applications)
+app.post('/api/admin/restore-from-supabase', async (req, res) => {
+  try {
+    console.log('[Restore] Supabase bazasidan tiklash boshlandi...');
+    
+    let SupabaseModule;
+    try {
+      SupabaseModule = await import('@supabase/supabase-js');
+    } catch (importErr: any) {
+      console.error('[Restore] @supabase/supabase-js yuklashda xato:', importErr.message);
+      return res.status(500).json({ success: false, error: 'Supabase kutubxonasi topilmadi' });
+    }
+
+    const { createClient } = SupabaseModule;
+    const SUPABASE_URL = 'https://axraplltokeuthtaabuy.supabase.co';
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF4cmFwbGx0b2tldXRodGFhYnV5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTMzNjk3MjYsImV4cCI6MjEwODk0NTcyNn0.rQaaQHoy2Gohe4AGjv2AkqMB4-5IGDnaAhvmr5U6QM4';
+    
+    if (!SUPABASE_KEY) {
+      return res.status(500).json({ success: false, error: 'Supabase KEY sozlanmagan' });
+    }
+
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+    
+    let allAppsRows: any[] = [];
+    let from = 0;
+    const BATCH_SIZE = 100; // Increased batch size for efficiency
+    let hasMore = true;
+    let errorOccurred = false;
+    let errorMessage = '';
+
+    while (hasMore) {
+      console.log(`[Restore] Ma'lumotlar olinmoqda: ${from} dan ${from + BATCH_SIZE}...`);
+      
+      // Retry logic for Supabase fetch
+      let retryCount = 0;
+      let success = false;
+      let data, error;
+
+      while (retryCount < 3 && !success) {
+        try {
+          const result = await supabase
+            .from('applications')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .range(from, from + BATCH_SIZE - 1);
+          
+          data = result.data;
+          error = result.error;
+          
+          if (!error) {
+            success = true;
+          } else {
+            console.warn(`[Restore] Supabase fetch urinishi ${retryCount + 1} xatosi:`, error.message);
+            retryCount++;
+            if (retryCount < 3) await new Promise(r => setTimeout(r, 2000));
+          }
+        } catch (e: any) {
+          console.warn(`[Restore] Kutilmagan fetch xatosi (urinish ${retryCount + 1}):`, e.message);
+          retryCount++;
+          if (retryCount < 3) await new Promise(r => setTimeout(r, 2000));
+          errorMessage = e.message;
+        }
+      }
+
+      if (error && !success) {
+        console.error('[Restore] Supabase fetch yakuniy xatosi:', error.message);
+        errorMessage = error.message;
+        errorOccurred = true;
+        break;
+      }
+
+      if (data && data.length > 0) {
+        allAppsRows = [...allAppsRows, ...data];
+        if (data.length < BATCH_SIZE) hasMore = false;
+        else from += BATCH_SIZE;
+      } else {
+        hasMore = false;
+      }
+    }
+
+    if (errorOccurred && allAppsRows.length === 0) {
+      return res.status(503).json({ 
+        success: false, 
+        error: `Supabase bazasidan ma'lumot olib bo'lmadi: ${errorMessage}. Iltimos, Supabase loyihasi holatini tekshiring.` 
+      });
+    }
+
+    console.log(`[Restore] Jami ${allAppsRows.length} ta qator topildi. Birlashtirilmoqda...`);
+
+    const currentApps = getStoredApplications();
+    const mergedMap = new Map();
+    
+    // Fill map with current apps first
+    currentApps.forEach(a => {
+      if (a && a.id) mergedMap.set(a.id, a);
+    });
+
+    let restoreCount = 0;
+    allAppsRows.forEach(row => {
+      let appData = row.data;
+      
+      // Handle case where data might be a string (JSONB is usually object, but just in case)
+      if (typeof appData === 'string') {
+        try {
+          appData = JSON.parse(appData);
+        } catch (e) {
+          console.warn(`[Restore] Ariza ${row.id} ma'lumotlarini parse qilib bo'lmadi.`);
+          return;
+        }
+      }
+
+      if (appData && appData.id) {
+        // Sync status if it's separate in table
+        if (row.status && !appData.status) appData.status = row.status;
+        
+        // Process docs to ensure they are saved to disk
+        try {
+          const processed = processApplicationDocs(appData);
+          mergedMap.set(appData.id, processed);
+          restoreCount++;
+        } catch (procErr) {
+          console.warn(`[Restore] Ariza ${appData.id} hujjatlarini qayta ishlashda xato:`, procErr);
+          mergedMap.set(appData.id, appData);
+        }
+      }
+    });
+
+    const finalApps = Array.from(mergedMap.values());
+    saveStoredApplications(finalApps);
+    
+    console.log(`[Restore] Tiklash yakunlandi. Jami: ${finalApps.length} ta ariza bazada mavjud.`);
+    res.json({ 
+      success: true, 
+      count: restoreCount, 
+      total: finalApps.length,
+      message: `${restoreCount} ta ariza muvaffaqiyatli tiklandi va birlashtirildi.` 
+    });
+  } catch (err: any) {
+    console.error('[Restore] Kutilmagan xatolik:', err);
+    res.status(500).json({ success: false, error: err.message || 'Serverda kutilmagan xatolik' });
+  }
 });
 
 // 13. Reset database completely to 0 (Hammasini 0 ga qaytarish)

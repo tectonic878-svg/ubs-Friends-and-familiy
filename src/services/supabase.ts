@@ -1,16 +1,16 @@
 import { createClient } from '@supabase/supabase-js';
 import { AnyApplication, ApplicationStatus, ContractSettings, AdminCredentials } from '../types';
 
-// Supabase Project Credentials
-export const DEFAULT_SUPABASE_URL = 'https://inyevztbojubfainwste.supabase.co';
-export const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_HfgGCcfIL2N3W68I5yDsKw_KrZDJ29D';
+// Supabase Project Credentials (User's New Project)
+export const DEFAULT_SUPABASE_URL = 'https://cvotakqrqgschmsuhwgh.supabase.co';
+export const DEFAULT_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN2b3Rha3FycWdzY2htc3Vod2doIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA4NDUzOTYsImV4cCI6MjEwNjQyMTM5Nn0.j5377RDIhpLFuonaNdZKhW0DyNzVWTHWsjLit-kI9oo';
 
 export function getSupabaseCredentials(): { url: string; key: string } {
   try {
     const custom = localStorage.getItem('unigrant_supabase_config');
     if (custom) {
       const parsed = JSON.parse(custom);
-      if (parsed.url && parsed.key) return parsed;
+      if (parsed.url && parsed.key && parsed.url.includes('cvotakqrqgschmsuhwgh')) return parsed;
     }
   } catch {
     // ignore
@@ -367,11 +367,11 @@ export function subscribeApplicationsSupabase(
 ): () => void {
   let isMounted = true;
 
-  // Batch fetch to safely load large Base64 documents without hitting PostgREST statement timeout
+  // Fetch all applications safely with 50 items per batch
   const fetchAllApps = async () => {
     try {
       const allApps: AnyApplication[] = [];
-      const BATCH_SIZE = 2; // 2 applications per batch ensures fast queries under statement timeout
+      const BATCH_SIZE = 50;
       let from = 0;
       let hasMore = true;
 

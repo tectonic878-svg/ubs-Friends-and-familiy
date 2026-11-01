@@ -1,8 +1,8 @@
 import React, { useRef, useState } from 'react';
-import { UploadCloud, CheckCircle2, Trash2, Eye, Sparkles, FileText, Download, AlertCircle } from 'lucide-react';
+import { Trash2, Eye, FileText, Download, AlertCircle, ShieldAlert } from 'lucide-react';
 import { DocumentFile } from '../types';
 import { readFileAsDataUrl, downloadFile } from '../utils/formatters';
-import { createAuthenticPdfDataUrl } from '../utils/pdfGenerator';
+import { saveDocToVault } from '../utils/indexedDbVault';
 
 interface FileUploadFieldProps {
   id: string;
@@ -11,9 +11,6 @@ interface FileUploadFieldProps {
   document?: DocumentFile;
   onChange: (doc: DocumentFile | undefined) => void;
   onPreview: (doc: DocumentFile) => void;
-  sampleTitle?: string;
-  sampleSub?: string;
-  sampleJshshr?: string;
   desiredFileName?: string; // e.g. 31405021234567.pdf or 998901234567.pdf
   required?: boolean;
 }
@@ -21,13 +18,10 @@ interface FileUploadFieldProps {
 export const FileUploadField: React.FC<FileUploadFieldProps> = ({
   id,
   label,
-  subLabel = 'Faqat PDF (.pdf) hujjati qabul qilinadi',
+  subLabel = 'PDF (.pdf) yoki rasm (.jpg, .jpeg, .png) qabul qilinadi',
   document,
   onChange,
   onPreview,
-  sampleTitle = 'Hujjat_PDF',
-  sampleSub = 'Tasdiqlangan PDF nusxa',
-  sampleJshshr = '31405021234567',
   desiredFileName,
   required = false
 }) => {
@@ -35,37 +29,53 @@ export const FileUploadField: React.FC<FileUploadFieldProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const [formatError, setFormatError] = useState<string | null>(null);
 
-  const handleFile = async (file: File) => {
+  const validateAndReadFile = async (file: File) => {
     setFormatError(null);
-    const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-    
-    if (!isPdf) {
-      setFormatError('Xatolik: Faqat PDF (.pdf) formatidagi fayllar qabul qilinadi!');
+    const fileNameLower = file.name.toLowerCase();
+
+    // 1. Check supported extensions
+    const isPdf = fileNameLower.endsWith('.pdf') || file.type === 'application/pdf';
+    const isImage = fileNameLower.endsWith('.jpg') || 
+                    fileNameLower.endsWith('.jpeg') || 
+                    fileNameLower.endsWith('.png') || 
+                    fileNameLower.endsWith('.webp');
+
+    if (!isPdf && !isImage) {
+      setFormatError('❌ Xatolik: Faqat PDF (.pdf) yoki rasm (.jpg, .jpeg, .png, .webp) formatidagi hujjatlar qabul qilinadi.');
+      if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
 
-    if (file.size > 10 * 1024 * 1024) {
-      setFormatError('Fayl hajmi 10 MB dan oshmasligi kerak. Iltimos, optimallashtirilgan PDF yuklang.');
+    // 2. Strict file size check (Max 15MB)
+    if (file.size > 15 * 1024 * 1024) {
+      setFormatError('❌ Xatolik: Fayl hajmi 15 MB dan oshmasligi kerak.');
+      if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
 
+    // 3. Read data as Data URL
     try {
       const dataUrl = await readFileAsDataUrl(file);
-      // Auto-name according to rule: desiredFileName if given
-      const finalName = desiredFileName || (file.name.toLowerCase().endsWith('.pdf') ? file.name : `${file.name}.pdf`);
+      const ext = fileNameLower.split('.').pop() || (isPdf ? 'pdf' : 'jpg');
+      const baseName = desiredFileName ? desiredFileName.replace(/\.[^/.]+$/, '') : file.name.replace(/\.[^/.]+$/, '');
+      const finalName = `${baseName}.${ext}`;
       
       const newDoc: DocumentFile = {
         id: 'doc_' + Math.random().toString(36).substring(2, 9),
         name: finalName,
-        type: 'pdf',
+        type: isPdf ? 'pdf' : 'image',
         url: dataUrl,
+        dataUrl: dataUrl,
         size: (file.size / (1024 * 1024)).toFixed(2) + ' MB',
         uploadedAt: new Date().toISOString()
       };
+      saveDocToVault(newDoc).catch(() => {});
       onChange(newDoc);
     } catch (err) {
       console.error('Faylni o‘qishda xatolik:', err);
-      setFormatError('Faylni yuklashda xatolik yuz berdi.');
+      setFormatError('❌ Faylni o‘qishda xatolik yuz berdi. Boshqa fayl tanlab ko‘ring.');
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
@@ -73,37 +83,8 @@ export const FileUploadField: React.FC<FileUploadFieldProps> = ({
     e.preventDefault();
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleFile(e.dataTransfer.files[0]);
+      validateAndReadFile(e.dataTransfer.files[0]);
     }
-  };
-
-  const handleUseSample = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setFormatError(null);
-    const finalName = desiredFileName || `${sampleTitle.replace(/\s+/g, '_')}.pdf`;
-    
-    // Create authentic, valid %PDF-1.4 binary data URL
-    const authenticPdfUrl = createAuthenticPdfDataUrl({
-      title: sampleTitle.toUpperCase() + ' HUJJATI',
-      subTitle: sampleSub || 'UBS Tasdiqlangan Hujjat Nusxasi',
-      studentName: 'Aliyev Bekzod Jamshidovich',
-      jshshr: sampleJshshr || (desiredFileName ? desiredFileName.replace(/\.pdf$/i, '') : '31405021234567'),
-      phone: desiredFileName && desiredFileName.startsWith('998') ? desiredFileName.replace(/\.pdf$/i, '') : '+998 90 123 45 67',
-      faculty: 'Ijtimoiy fanlar va raqamli texnologiyalar',
-      course: '1-kurs',
-      docType: sampleTitle.toLowerCase().includes('diplom') || sampleTitle.toLowerCase().includes('shaxodatnoma') ? 'certificate' : 'passport'
-    });
-
-    const sampleDoc: DocumentFile = {
-      id: 'sample_' + Math.random().toString(36).substring(2, 9),
-      name: finalName,
-      type: 'pdf',
-      size: '0.05 MB',
-      dataUrl: authenticPdfUrl,
-      uploadedAt: new Date().toISOString(),
-      url: authenticPdfUrl
-    };
-    onChange(sampleDoc);
   };
 
   return (
@@ -112,36 +93,25 @@ export const FileUploadField: React.FC<FileUploadFieldProps> = ({
         <label htmlFor={id} className="block text-xs font-semibold text-slate-700">
           {label} {required && <span className="text-rose-500">*</span>}
         </label>
-        {!document && (
-          <button
-            type="button"
-            onClick={handleUseSample}
-            className="text-[11px] font-medium text-blue-600 hover:text-blue-700 flex items-center gap-1 hover:underline cursor-pointer"
-            title="Sinov uchun tayyor namunaviy PDF hujjatini yuklash"
-          >
-            <Sparkles className="w-3 h-3 text-amber-500" />
-            Namuna PDF yuklash
-          </button>
-        )}
       </div>
 
       <input
         ref={fileInputRef}
         id={id}
         type="file"
-        accept=".pdf,application/pdf"
+        accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp"
         className="hidden"
         onChange={(e) => {
           if (e.target.files && e.target.files[0]) {
-            handleFile(e.target.files[0]);
+            validateAndReadFile(e.target.files[0]);
           }
         }}
       />
 
       {formatError && (
-        <div className="mb-2 p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
-          <AlertCircle className="w-4 h-4 shrink-0" />
-          <span>{formatError}</span>
+        <div className="mb-2.5 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-start gap-2.5 animate-shake">
+          <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+          <span className="font-medium leading-relaxed">{formatError}</span>
         </div>
       )}
 
@@ -165,7 +135,7 @@ export const FileUploadField: React.FC<FileUploadFieldProps> = ({
           </div>
           <div>
             <p className="text-xs font-medium text-slate-800">
-              PDF faylni bu yerga tashlang yoki <span className="text-blue-600 underline">tanlang</span>
+              Faqat <strong className="text-rose-600">.PDF</strong> faylni bu yerga tashlang yoki <span className="text-blue-600 underline font-semibold">tanlang</span>
             </p>
             <p className="text-[11px] text-slate-400 mt-0.5">{subLabel}</p>
           </div>
@@ -194,7 +164,7 @@ export const FileUploadField: React.FC<FileUploadFieldProps> = ({
               <button
                 type="button"
                 onClick={() => downloadFile(document.url, document.name)}
-                className="p-1.5 text-slate-600 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition"
+                className="p-1.5 text-slate-600 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition cursor-pointer"
                 title="PDF faylni kompyuterga yuklab olish"
               >
                 <Download className="w-4 h-4" />
@@ -202,16 +172,16 @@ export const FileUploadField: React.FC<FileUploadFieldProps> = ({
               <button
                 type="button"
                 onClick={() => onPreview(document)}
-                className="p-1.5 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition"
-                title="Katta o'lchamda ko'rish"
+                className="p-1.5 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition cursor-pointer"
+                title="Katta o‘lchamda ko‘rish"
               >
                 <Eye className="w-4 h-4" />
               </button>
               <button
                 type="button"
                 onClick={() => onChange(undefined)}
-                className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
-                title="O'chirish va qayta yuklash"
+                className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                title="O‘chirish va qayta yuklash"
               >
                 <Trash2 className="w-4 h-4" />
               </button>
